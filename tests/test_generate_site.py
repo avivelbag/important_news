@@ -1,5 +1,3 @@
-"""Tests for the static site generator (src/generate_site.py)."""
-
 from datetime import datetime, timezone
 
 import pytest
@@ -19,7 +17,6 @@ from src.models import Story
 
 @pytest.fixture()
 def engine():
-    """In-memory SQLite engine with the schema initialised."""
     eng = get_engine("sqlite://")
     init_db(eng)
     yield eng
@@ -28,14 +25,12 @@ def engine():
 
 @pytest.fixture()
 def session(engine):
-    """Session bound to the in-memory engine, closed after each test."""
     sess = get_session(engine)
     yield sess
     sess.close()
 
 
 def _make_story(**kwargs) -> Story:
-    """Build a Story with sensible defaults overridable per test."""
     base = dict(
         title="A Title",
         url="https://example.com/article",
@@ -51,13 +46,7 @@ def _make_story(**kwargs) -> Story:
     return Story(**base)
 
 
-# ---------------------------------------------------------------------------
-# Happy path
-# ---------------------------------------------------------------------------
-
-
 def test_generate_site_writes_both_files(session, engine, tmp_path):
-    """generate_site produces index.html + style.css with embedded content."""
     session.add(
         _make_story(
             title="Big AI breakthrough",
@@ -84,7 +73,6 @@ def test_generate_site_writes_both_files(session, engine, tmp_path):
 
 
 def test_stories_sorted_by_score_then_recency(session):
-    """fetch_stories orders by computed_score desc, then published_at desc."""
     session.add_all(
         [
             _make_story(
@@ -115,7 +103,6 @@ def test_stories_sorted_by_score_then_recency(session):
 
 
 def test_group_by_topic_orders_known_topics_first(session):
-    """group_by_topic emits ai/aerospace/both first, unknown topics after."""
     stories = [
         _make_story(url="https://a/z", topic="zeta"),
         _make_story(url="https://a/aero", topic="aerospace"),
@@ -125,13 +112,7 @@ def test_group_by_topic_orders_known_topics_first(session):
     assert list(grouped.keys()) == ["ai", "aerospace", "zeta"]
 
 
-# ---------------------------------------------------------------------------
-# Edge cases
-# ---------------------------------------------------------------------------
-
-
 def test_empty_database_produces_valid_page(session, engine, tmp_path):
-    """With no stories the build still emits a valid, self-contained page."""
     out = generate_site(engine=engine, out_dir=tmp_path / "docs")
     index = (out / "index.html").read_text(encoding="utf-8")
     assert index.startswith("<!DOCTYPE html>")
@@ -140,7 +121,6 @@ def test_empty_database_produces_valid_page(session, engine, tmp_path):
 
 
 def test_output_is_deterministic(session, engine, tmp_path):
-    """Two builds of identical data yield byte-identical output."""
     session.add(_make_story(url="https://a/det"))
     session.commit()
 
@@ -151,7 +131,6 @@ def test_output_is_deterministic(session, engine, tmp_path):
 
 
 def test_html_escaping_prevents_injection():
-    """Malicious title/url text is escaped, not emitted raw into the HTML."""
     story = _make_story(
         title='<script>alert("x")</script>',
         url='https://evil/"onmouseover="x',
@@ -163,31 +142,22 @@ def test_html_escaping_prevents_injection():
 
 
 def test_creates_nested_output_directory(session, engine, tmp_path):
-    """generate_site creates missing parent directories for the output path."""
     nested = tmp_path / "deep" / "nested" / "docs"
     out = generate_site(engine=engine, out_dir=nested)
     assert (out / "index.html").exists()
 
 
-# ---------------------------------------------------------------------------
-# Failure / no-op behaviour
-# ---------------------------------------------------------------------------
-
-
 def test_domain_returns_empty_for_unparseable_url():
-    """_domain yields an empty string (no crash) when there is no host."""
     assert _domain("not a url") == ""
     assert _domain("") == ""
 
 
 def test_render_story_falls_back_to_raw_score_without_votes():
-    """When vote_count is 0, points fall back to raw_score."""
     story = _make_story(vote_count=0, raw_score=7)
     assert "7 points" in render_story(story, 1)
 
 
 def test_render_html_is_string_and_self_contained():
-    """render_html returns a str with no external http(s) script/style refs."""
     html = render_html({})
     assert isinstance(html, str)
     assert "<script" not in html

@@ -1,12 +1,3 @@
-"""Static site generator: render the stories database into a self-contained
-Hacker-News-style HTML/CSS site under ``docs/`` for GitHub Pages.
-
-Run as ``python src/generate_site.py`` to (re)build the site. The build is
-deterministic: stories are sorted by computed score then recency, and no
-timestamps from the build moment leak into the output, so identical database
-contents always produce byte-identical files.
-"""
-
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -31,9 +22,6 @@ _TOPIC_ORDER = ["ai", "aerospace", "both"]
 
 
 def fetch_stories(session) -> list[Story]:
-    """Return every Story ordered for display: highest computed_score first,
-    ties broken by most-recent published_at, then by id for full determinism.
-    """
     stmt = select(Story).order_by(
         Story.computed_score.desc(),
         Story.published_at.desc(),
@@ -43,9 +31,6 @@ def fetch_stories(session) -> list[Story]:
 
 
 def group_by_topic(stories: list[Story]) -> dict[str, list[Story]]:
-    """Group *stories* by their ``topic`` field, preserving the input order
-    within each group and emitting groups in :data:`_TOPIC_ORDER` first.
-    """
     grouped: dict[str, list[Story]] = {}
     for story in stories:
         grouped.setdefault(story.topic, []).append(story)
@@ -60,7 +45,6 @@ def group_by_topic(stories: list[Story]) -> dict[str, list[Story]]:
 
 
 def _domain(url: str) -> str:
-    """Return the bare host (without ``www.``) of *url*, or "" if unparseable."""
     netloc = urlparse(url).netloc
     if netloc.startswith("www."):
         netloc = netloc[4:]
@@ -68,20 +52,10 @@ def _domain(url: str) -> str:
 
 
 def _format_timestamp(value: datetime) -> str:
-    """Render a datetime as a stable ``YYYY-MM-DD HH:MM`` UTC-style label.
-
-    Uses the stored value verbatim (no ``now()`` call) so output stays
-    deterministic across builds.
-    """
     return value.strftime("%Y-%m-%d %H:%M")
 
 
 def render_story(story: Story, index: int) -> str:
-    """Render a single story row as an HTML ``<li>`` fragment.
-
-    *index* is the 1-based rank shown to the left of the title. All
-    user/scraped text is HTML-escaped to keep the output safe and valid.
-    """
     domain = _domain(story.url)
     domain_html = (
         f' <span class="domain">({escape(domain)})</span>' if domain else ""
@@ -102,7 +76,6 @@ def render_story(story: Story, index: int) -> str:
 
 
 def render_section(topic: str, stories: list[Story]) -> str:
-    """Render one topic section (heading + ordered list of stories)."""
     label = _TOPIC_LABELS.get(topic, topic.title())
     rows = "\n".join(
         render_story(story, i) for i, story in enumerate(stories, start=1)
@@ -116,11 +89,6 @@ def render_section(topic: str, stories: list[Story]) -> str:
 
 
 def render_html(grouped: dict[str, list[Story]]) -> str:
-    """Render the full ``index.html`` document for the grouped stories.
-
-    The result links to ``style.css`` (a sibling file) and embeds all article
-    content inline, so the page needs no network access at runtime.
-    """
     if grouped:
         body = "\n".join(
             render_section(topic, stories) for topic, stories in grouped.items()
@@ -157,7 +125,6 @@ def render_html(grouped: dict[str, list[Story]]) -> str:
 
 
 def render_css() -> str:
-    """Return the standalone Hacker-News-flavoured stylesheet as a string."""
     return (
         ":root { --accent: #ff6600; --muted: #828282; --bg: #f6f6ef; }\n"
         "* { box-sizing: border-box; }\n"
@@ -212,12 +179,6 @@ def render_css() -> str:
 def generate_site(
     engine: Engine | None = None, out_dir: Path | str = _DEFAULT_OUT_DIR
 ) -> Path:
-    """Build the static site into *out_dir*, returning that directory.
-
-    Reads every Story from the database behind *engine* (default engine when
-    None), writes ``index.html`` and ``style.css``, creating *out_dir* if
-    needed. Repeatable and deterministic for fixed database contents.
-    """
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
