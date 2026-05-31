@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
+import src.article_cache as article_cache
 import src.db as db
 import src.deduplicator as deduplicator
 import src.discussions as discussions
@@ -244,7 +245,9 @@ def ensure_source(session, spec: SourceSpec) -> models.Source:
     return source
 
 
-def insert_items(session, source, items, now: dt.datetime) -> tuple:
+def insert_items(
+    session, source, items, now: dt.datetime, cache_content: bool = False
+) -> tuple:
     # Dedupe against both stored URLs and URLs seen earlier in this same batch.
     existing_urls = {row[0] for row in session.query(models.Story.url).all()}
     inserted = 0
@@ -255,17 +258,23 @@ def insert_items(session, source, items, now: dt.datetime) -> tuple:
             skipped += 1
             continue
         seen.add(item.url)
-        session.add(
-            models.Story(
-                title=item.title,
-                url=item.url,
-                source_name=source.name,
-                topic=item.category,
-                published_at=item.published_at or now,
-                fetched_at=now,
-                source=source,
-            )
+        story = models.Story(
+            title=item.title,
+            url=item.url,
+            source_name=source.name,
+            topic=item.category,
+            published_at=item.published_at or now,
+            fetched_at=now,
+            source=source,
         )
+        # Archive the source page when requested; a failed fetch is swallowed
+        # (story stays uncached) so one dead URL never aborts the batch.
+        if cache_content:
+            try:
+                article_cache.cache_story_content(story, now=now)
+            except Exception:
+                pass
+        session.add(story)
         inserted += 1
     return inserted, skipped
 
@@ -276,6 +285,7 @@ def scrape_source(
     fetch: FetchFn,
     now: dt.datetime | None = None,
     failure_threshold: int = source_health.DEFAULT_FAILURE_THRESHOLD,
+    cache_content: bool = False,
 ) -> int:
     connector = CONNECTORS.get(spec.kind)
     if connector is None:
@@ -300,7 +310,9 @@ def scrape_source(
             )
             session.commit()
             raise
-        inserted, skipped = insert_items(session, source, items, now)
+        inserted, skipped = insert_items(
+            session, source, items, now, cache_content=cache_content
+        )
         source_health.record_fetch(
             session,
             source,
@@ -330,6 +342,7 @@ def run_scraper(
     skip_unhealthy: bool = False,
     failure_threshold: int = source_health.DEFAULT_FAILURE_THRESHOLD,
     search_fn=discussions.default_search_fn,
+    cache_content: bool = False,
 ) -> ScrapeResult:
     if now is None:
         now = dt.datetime.now(dt.timezone.utc)
@@ -350,7 +363,9 @@ def run_scraper(
                 result.per_source[spec.name] = 0
                 continue
         try:
-            inserted = scrape_source(engine, spec, fetch, now, failure_threshold)
+            inserted = scrape_source(
+                engine, spec, fetch, now, failure_threshold, cache_content
+            )
         except Exception as exc:  # isolate per-source failures from the run
             logger.error("source %s failed: %s", spec.name, exc)
             result.errors += 1
