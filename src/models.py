@@ -16,6 +16,8 @@ class Source(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(unique=True)
     url: Mapped[str]
+    # Reliability multiplier applied to every story from this source when scoring.
+    quality_weight: Mapped[float] = mapped_column(default=1.0)
 
     stories: Mapped[list["Story"]] = relationship(back_populates="source")
 
