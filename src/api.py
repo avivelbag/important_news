@@ -11,6 +11,13 @@ from fastapi import Body, Cookie, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
+from src.comments import (
+    CommentError,
+    delete_comment,
+    get_thread,
+    post_comment,
+    vote_comment,
+)
 from src.db import get_engine, get_session, init_db
 from src.search import SearchError, search_stories
 from src.source_health import health_dashboard
@@ -101,6 +108,110 @@ def api_article_votes(article_id: int) -> dict:
         return get_distribution(session, article_id)
     except VoteError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+def _comment_status(exc: CommentError) -> int:
+    """Map a CommentError to 404 for unknown ids, else 400 for bad input."""
+    return 404 if exc.not_found else 400
+
+
+@app.get("/api/articles/{article_id}/comments")
+def api_get_comments(article_id: int) -> list[dict]:
+    """Return the nested comment thread for *article_id*; 404 if it is unknown."""
+    session = _session()
+    try:
+        return get_thread(session, article_id)
+    except CommentError as exc:
+        raise HTTPException(status_code=_comment_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/comments")
+def api_post_comment(
+    payload: dict = Body(...),
+    voter_id: str | None = Cookie(default=None),
+) -> JSONResponse:
+    """Post a new comment (or reply) and return the created comment.
+
+    Accepts ``story_id`` or ``article_id``, ``body``, and optional
+    ``parent_comment_id`` in the JSON body. The author id defaults to the
+    ``voter_id`` cookie (a fresh uuid is minted and set when absent). Responds
+    400 for missing/empty body or a cross-story parent, 404 for an unknown
+    story or parent comment.
+    """
+    story_id = payload.get("story_id", payload.get("article_id"))
+    body = payload.get("body")
+    if story_id is None or body is None:
+        raise HTTPException(status_code=400, detail="story_id and body required")
+
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+
+    session = _session()
+    try:
+        comment = post_comment(
+            session,
+            int(story_id),
+            body,
+            user_id=voter_id,
+            parent_comment_id=payload.get("parent_comment_id"),
+        )
+        result = {
+            "id": comment.id,
+            "story_id": comment.story_id,
+            "parent_comment_id": comment.parent_comment_id,
+            "user_id": comment.user_id,
+            "body": comment.body,
+            "vote_count": comment.vote_count,
+        }
+    except CommentError as exc:
+        raise HTTPException(status_code=_comment_status(exc), detail=str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+    response = JSONResponse(result, status_code=201)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.delete("/api/comments/{comment_id}")
+def api_delete_comment(comment_id: int) -> dict:
+    """Soft-delete *comment_id* (keeps the row); 404 if it does not exist."""
+    session = _session()
+    try:
+        comment = delete_comment(session, comment_id)
+        return {"id": comment.id, "deleted": comment.deleted}
+    except CommentError as exc:
+        raise HTTPException(status_code=_comment_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/comments/{comment_id}/vote")
+def api_vote_comment(comment_id: int, payload: dict = Body(...)) -> dict:
+    """Apply a -1/+1 vote to *comment_id* and return its new vote_count.
+
+    Responds 400 for a missing/invalid ``vote_value`` and 404 when the comment
+    does not exist.
+    """
+    vote_value = payload.get("vote_value")
+    if vote_value is None:
+        raise HTTPException(status_code=400, detail="vote_value required")
+    session = _session()
+    try:
+        new_count = vote_comment(session, comment_id, int(vote_value))
+        return {"id": comment_id, "vote_count": new_count}
+    except CommentError as exc:
+        raise HTTPException(status_code=_comment_status(exc), detail=str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         session.close()
 
