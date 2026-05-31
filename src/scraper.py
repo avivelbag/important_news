@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 
 import src.db as db
 import src.deduplicator as deduplicator
+import src.discussions as discussions
 import src.models as models
 import src.scorer as scorer
 import src.source_health as source_health
@@ -328,6 +329,7 @@ def run_scraper(
     now: dt.datetime | None = None,
     skip_unhealthy: bool = False,
     failure_threshold: int = source_health.DEFAULT_FAILURE_THRESHOLD,
+    search_fn=discussions.default_search_fn,
 ) -> ScrapeResult:
     if now is None:
         now = dt.datetime.now(dt.timezone.utc)
@@ -361,6 +363,15 @@ def run_scraper(
     # transitively, on every refresh.
     deduplicator.deduplicate(engine, now=now)
     scorer.recompute_scores(engine, now=now)
+    # Link external Reddit/GitHub/HN threads to the freshly scored stories. Runs
+    # after dedup so only canonical stories are matched; search_fn is injectable
+    # (None disables it) so tests stay offline.
+    if search_fn is not None:
+        session = db.get_session(engine)
+        try:
+            discussions.discover_discussions_for_stories(session, search_fn, now=now)
+        finally:
+            session.close()
     return result
 
 

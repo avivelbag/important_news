@@ -160,3 +160,41 @@ class Comment(Base):
         back_populates="replies", remote_side=[id]
     )
     replies: Mapped[list["Comment"]] = relationship(back_populates="parent")
+
+
+class ExternalDiscussion(Base):
+    """A discussion thread about a story found on an external platform.
+
+    These are off-site threads (Reddit, GitHub, Hacker News) discovered by
+    matching a story's topic/keywords against search results, so readers get
+    "threads from the internet" context alongside the on-site comments.
+
+    ``url`` is stored in its normalised form (see ``discussions.normalize_url``)
+    so the same thread reached via http/https, with/without ``www`` or a
+    trailing slash, collapses to one row. The ``(story_id, platform, url)``
+    unique constraint makes re-running discovery idempotent. ``discovered_at``
+    records when the link was first found (used for cache TTL) and
+    ``last_verified_at`` when its metadata was last re-checked against the
+    source — link-rot pruning updates the latter and deletes dead rows.
+    """
+
+    __tablename__ = "external_discussions"
+    __table_args__ = (
+        UniqueConstraint("story_id", "platform", "url"),
+        Index("ix_external_discussions_story", "story_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    story_id: Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    # "reddit" | "github" | "hn"
+    platform: Mapped[str]
+    url: Mapped[str]
+    title: Mapped[str]
+    comment_count: Mapped[int] = mapped_column(default=0)
+    # Platform-relative engagement signal (upvotes/reactions/score); used only
+    # for ranking links within a story, not compared across platforms.
+    engagement_score: Mapped[int] = mapped_column(default=0)
+    discovered_at: Mapped[datetime]
+    last_verified_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    story: Mapped["Story"] = relationship()

@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from sqlalchemy import Engine, select
 
 from src.db import get_engine, get_session
+from src.discussions import get_discussions
 from src.models import Story
 from src.rss_generator import CATEGORY_FILTERS, generate_rss, story_in_category
 
@@ -84,7 +85,36 @@ def _format_timestamp(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M")
 
 
-def render_story(story: Story, index: int) -> str:
+def render_discussion_links(discussions: list[dict]) -> str:
+    """Render "Discuss on <platform>" links for a story's external threads.
+
+    Returns an empty string when there are no discussions so an unlinked story
+    renders exactly as before. Each link shows the platform, thread title, and
+    a comment-count engagement indicator, grouping by platform in the ranked
+    order :func:`src.discussions.get_discussions` returns.
+    """
+    if not discussions:
+        return ""
+    items = []
+    for d in discussions:
+        label = escape(str(d.get("platform_label") or d.get("platform", "")))
+        count = d.get("comment_count") or 0
+        count_label = "1 comment" if count == 1 else f"{count} comments"
+        items.append(
+            '          <li class="discussion">'
+            f'<a class="discussion-link" href="{escape(str(d.get("url", "")), quote=True)}" '
+            f'title="{escape(str(d.get("title", "")), quote=True)}">'
+            f"Discuss on {label}</a> "
+            f'<span class="discussion-count">{escape(count_label)}</span></li>'
+        )
+    return (
+        '        <ul class="discussions-external">\n'
+        + "\n".join(items)
+        + "\n        </ul>"
+    )
+
+
+def render_story(story: Story, index: int, discussions: list[dict] | None = None) -> str:
     domain = _domain(story.url)
     domain_html = (
         f' <span class="domain">({escape(domain)})</span>' if domain else ""
@@ -125,15 +155,22 @@ def render_story(story: Story, index: int) -> str:
         '&middot; <button type="button" class="comments-toggle">'
         f'<span class="comment-count">{comments_label}</span></button></span>\n'
         '        <div class="comments" hidden></div>\n'
+        f"{render_discussion_links(discussions or [])}\n"
         "      </span>\n"
         "    </li>"
     )
 
 
-def render_section(topic: str, stories: list[Story]) -> str:
+def render_section(
+    topic: str,
+    stories: list[Story],
+    discussions_map: dict[int, list[dict]] | None = None,
+) -> str:
     label = _TOPIC_LABELS.get(topic, topic.title())
+    discussions_map = discussions_map or {}
     rows = "\n".join(
-        render_story(story, i) for i, story in enumerate(stories, start=1)
+        render_story(story, i, discussions_map.get(story.id))
+        for i, story in enumerate(stories, start=1)
     )
     topic_attr = escape(topic, quote=True)
     return (
@@ -145,10 +182,14 @@ def render_section(topic: str, stories: list[Story]) -> str:
     )
 
 
-def render_html(grouped: dict[str, list[Story]]) -> str:
+def render_html(
+    grouped: dict[str, list[Story]],
+    discussions_map: dict[int, list[dict]] | None = None,
+) -> str:
     if grouped:
         body = "\n".join(
-            render_section(topic, stories) for topic, stories in grouped.items()
+            render_section(topic, stories, discussions_map)
+            for topic, stories in grouped.items()
         )
     else:
         body = '  <p class="empty">No stories yet.</p>'
@@ -294,6 +335,12 @@ def render_css() -> str:
         ".comment-body { font-size: 0.82rem; white-space: pre-wrap; }\n"
         ".comment-form textarea { width: 100%; max-width: 480px; font: inherit; }\n"
         ".comments-empty { color: var(--muted); font-style: italic; }\n"
+        "ul.discussions-external { list-style: none; padding: 0; margin: 0.3rem 0 0; "
+        "display: flex; flex-wrap: wrap; gap: 0.5rem; }\n"
+        "li.discussion { font-size: 0.76rem; }\n"
+        "a.discussion-link { color: var(--accent); text-decoration: none; font-weight: bold; }\n"
+        "a.discussion-link:hover { text-decoration: underline; }\n"
+        ".discussion-count { color: var(--muted); }\n"
         ".empty { color: var(--muted); font-style: italic; }\n"
         "footer {\n"
         "  max-width: 760px;\n"
@@ -676,11 +723,14 @@ def generate_site(
     session = get_session(engine)
     try:
         stories = fetch_stories(session)
+        discussions_map = {
+            s.id: get_discussions(session, s.id) for s in stories
+        }
     finally:
         session.close()
 
     (out_path / "index.html").write_text(
-        render_html(group_by_topic(stories)), encoding="utf-8"
+        render_html(group_by_topic(stories), discussions_map), encoding="utf-8"
     )
     (out_path / "style.css").write_text(render_css(), encoding="utf-8")
     (out_path / "filter.js").write_text(render_js(), encoding="utf-8")
