@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 
 import src.db as db
 import src.models as models
+import src.scorer as scorer
 
 logger = logging.getLogger("scraper")
 
@@ -310,6 +311,7 @@ def run_scraper(
             continue
         result.inserted += inserted
         result.per_source[spec.name] = inserted
+    scorer.recompute_scores(engine, now=now)
     return result
 
 
