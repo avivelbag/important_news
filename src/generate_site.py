@@ -74,6 +74,19 @@ def group_by_topic(stories: list[Story]) -> dict[str, list[Story]]:
     return ordered
 
 
+def _profile_href(username: str) -> str:
+    """Return the profile-page URL for *username*, query-string encoded.
+
+    The static site has no server-side routing, so a profile lives at
+    ``user.html?u=<username>`` (resolved client-side by ``user.js``) rather than
+    a true ``/user/<username>`` path. The username is fully escaped for use in an
+    HTML attribute.
+    """
+    from urllib.parse import quote
+
+    return "user.html?u=" + escape(quote(username, safe=""), quote=True)
+
+
 def _domain(url: str) -> str:
     netloc = urlparse(url).netloc
     if netloc.startswith("www."):
@@ -158,6 +171,14 @@ def render_story(story: Story, index: int, discussions: list[dict] | None = None
     story_attr = escape(str(story.id), quote=True) if story.id is not None else ""
     comment_count = story.comment_count or 0
     comments_label = "1 comment" if comment_count == 1 else f"{comment_count} comments"
+    # Link the submitter's name to their profile page so user profiles are
+    # reachable from author names throughout the site.
+    submitter_html = ""
+    if story.submitted_by:
+        submitter_html = (
+            f' &middot; by <a class="author" href="{_profile_href(story.submitted_by)}">'
+            f"{escape(story.submitted_by)}</a>"
+        )
     return (
         f'    <li class="story" data-story-id="{story_attr}">\n'
         f'      <span class="rank">{index}.</span>\n'
@@ -172,7 +193,7 @@ def render_story(story: Story, index: int, discussions: list[dict] | None = None
         f"{escape(story.title)}</a>{domain_html}\n"
         '        <span class="meta">'
         f'<span class="points">{points} points</span>{downvotes_html} '
-        f"&middot; {sources_html} "
+        f"&middot; {sources_html}{submitter_html} "
         f"&middot; {escape(_format_timestamp(story.published_at))} "
         '&middot; <button type="button" class="comments-toggle">'
         f'<span class="comment-count">{comments_label}</span></button></span>'
@@ -236,6 +257,10 @@ def render_html(
         "<body>\n"
         "  <header>\n"
         '    <h1>Important News</h1>\n'
+        '    <nav class="site-nav">\n'
+        '      <a href="index.html">Home</a>\n'
+        '      <a href="leaderboard.html">Leaderboard</a>\n'
+        "    </nav>\n"
         '    <form class="search" role="search" autocomplete="off">\n'
         '      <input type="search" id="search-box" name="q" '
         'placeholder="Search stories…" minlength="2" maxlength="100" '
@@ -365,6 +390,37 @@ def render_css() -> str:
         "a.discussion-link:hover { text-decoration: underline; }\n"
         ".discussion-count { color: var(--muted); }\n"
         ".empty { color: var(--muted); font-style: italic; }\n"
+        ".muted { color: var(--muted); }\n"
+        "nav.site-nav { margin-top: 0.35rem; display: flex; gap: 0.8rem; }\n"
+        "nav.site-nav a { color: #fff; font-size: 0.8rem; text-decoration: none; }\n"
+        "nav.site-nav a:hover { text-decoration: underline; }\n"
+        "a.author { color: var(--accent); text-decoration: none; }\n"
+        "a.author:hover { text-decoration: underline; }\n"
+        ".profile-header { border-bottom: 1px solid #ddd; padding-bottom: 0.5rem; }\n"
+        ".profile-karma { font-size: 1.4rem; font-weight: bold; color: var(--accent); }\n"
+        ".profile-stats { color: var(--muted); font-size: 0.85rem; }\n"
+        ".profile-bio { margin: 0.5rem 0; }\n"
+        ".profile-tabs { display: flex; gap: 0.5rem; margin: 0.8rem 0 0.4rem; }\n"
+        "button.tab {\n"
+        "  border: 1px solid #ddd;\n"
+        "  background: #fff;\n"
+        "  font: inherit;\n"
+        "  font-size: 0.82rem;\n"
+        "  padding: 0.2rem 0.7rem;\n"
+        "  border-radius: 3px;\n"
+        "  cursor: pointer;\n"
+        "}\n"
+        "button.tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }\n"
+        ".activity-item { padding: 0.3rem 0; border-bottom: 1px solid #eee; font-size: 0.85rem; }\n"
+        ".activity-kind { color: var(--muted); font-size: 0.75rem; }\n"
+        ".pager { display: flex; gap: 0.6rem; align-items: center; margin-top: 0.6rem; }\n"
+        "button.page-btn { font: inherit; font-size: 0.8rem; cursor: pointer; }\n"
+        "button.page-btn[disabled] { color: var(--muted); cursor: default; }\n"
+        "ol.leaderboard { list-style: none; padding: 0; margin: 0; }\n"
+        "ol.leaderboard li { padding: 0.35rem 0; border-bottom: 1px solid #eee; display: flex; gap: 0.6rem; }\n"
+        ".lb-rank { color: var(--muted); min-width: 1.6rem; text-align: right; }\n"
+        ".lb-karma { margin-left: auto; color: var(--accent); font-weight: bold; }\n"
+        ".private-note { color: var(--muted); font-style: italic; }\n"
         "footer {\n"
         "  max-width: 760px;\n"
         "  margin: 0 auto;\n"
@@ -621,6 +677,10 @@ def render_comments_js() -> str:
         "\n"
         "  function renderNode(c) {\n"
         '    var author = c.deleted ? "[deleted]" : (c.user_id || "anonymous");\n'
+        "    var authorHtml = (!c.deleted && c.user_id)\n"
+        '      ? \'<a class="author" href="user.html?u=\' +\n'
+        "        encodeURIComponent(c.user_id) + '\">' + esc(author) + '</a>'\n"
+        "      : esc(author);\n"
         '    var children = "";\n'
         "    if (c.replies && c.replies.length) {\n"
         "      for (var i = 0; i < c.replies.length; i++) {\n"
@@ -634,7 +694,7 @@ def render_comments_js() -> str:
         '      \'<textarea name="body" placeholder="Reply"></textarea>\' +\n'
         '      \'<button type="submit">Post reply</button></form>\';\n'
         '    return \'<div class="comment" data-comment-id="\' + esc(c.id) + \'">\' +\n'
-        '      \'<div class="comment-meta">\' + esc(author) +\n'
+        '      \'<div class="comment-meta">\' + authorHtml +\n'
         '      \' &middot; <span class="comment-votes">\' + esc(c.vote_count) +\n'
         "      ' points</span> &middot; ' + esc(c.created_at || '') + '</div>' +\n"
         '      \'<div class="comment-body">\' + esc(c.body) + \'</div>\' + reply +\n'
@@ -715,6 +775,248 @@ def render_comments_js() -> str:
     )
 
 
+def _page_shell(title: str, main_inner: str, scripts: list[str]) -> str:
+    """Return a full HTML document reusing the site chrome (header, nav, css).
+
+    *main_inner* is the raw HTML placed inside ``<main>`` (a shell the page's JS
+    fills in), and *scripts* are script filenames loaded at the end of body.
+    """
+    script_tags = "\n".join(
+        f'  <script src="{escape(s, quote=True)}"></script>' for s in scripts
+    )
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '  <meta charset="utf-8">\n'
+        '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"  <title>{escape(title)}</title>\n"
+        '  <link rel="stylesheet" href="style.css">\n'
+        "</head>\n"
+        "<body>\n"
+        "  <header>\n"
+        "    <h1>Important News</h1>\n"
+        '    <nav class="site-nav">\n'
+        '      <a href="index.html">Home</a>\n'
+        '      <a href="leaderboard.html">Leaderboard</a>\n'
+        "    </nav>\n"
+        "  </header>\n"
+        "  <main>\n"
+        f"{main_inner}\n"
+        "  </main>\n"
+        '  <footer>Generated static site &middot; AI &amp; Aerospace</footer>\n'
+        f"{script_tags}\n"
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+def render_user_page() -> str:
+    """Return the static profile-page shell (``user.html``).
+
+    The username is read from the ``?u=`` query string by ``user.js``, which
+    fills ``#profile`` with the user's karma, bio, counts, and paginated
+    activity tabs fetched from the profile API.
+    """
+    return _page_shell(
+        "User Profile",
+        '    <section id="profile" data-loading="true">\n'
+        '      <p class="muted">Loading profile…</p>\n'
+        "    </section>",
+        ["user.js"],
+    )
+
+
+def render_leaderboard_page() -> str:
+    """Return the static leaderboard-page shell (``leaderboard.html``).
+
+    ``leaderboard.js`` fills ``#leaderboard`` with the top users by karma fetched
+    from ``/api/users/leaderboard``; each row links to that user's profile page.
+    """
+    return _page_shell(
+        "Leaderboard",
+        "    <h2>Top users by karma</h2>\n"
+        '    <ol class="leaderboard" id="leaderboard">\n'
+        '      <li class="muted">Loading…</li>\n'
+        "    </ol>",
+        ["leaderboard.js"],
+    )
+
+
+def render_user_js() -> str:
+    # Resolves the username from ?u=, fetches the public profile, and renders
+    # karma + cached counts. Two tabs (articles, comments) lazily page through
+    # the activity APIs; a private or unknown user renders a stub with no
+    # activity. Karma is re-fetched whenever the profile tab is shown so a vote
+    # cast elsewhere is reflected on the next visit.
+    return (
+        "(function () {\n"
+        "  function esc(s) {\n"
+        '    var d = document.createElement("div");\n'
+        '    d.textContent = s == null ? "" : String(s);\n'
+        "    return d.innerHTML;\n"
+        "  }\n"
+        "  function param(name) {\n"
+        "    var m = new RegExp('[?&]' + name + '=([^&]*)').exec(\n"
+        '      window.location.search);\n'
+        '    return m ? decodeURIComponent(m[1].replace(/\\+/g, " ")) : "";\n'
+        "  }\n"
+        "\n"
+        '  var root = document.getElementById("profile");\n'
+        "  var user = param('u');\n"
+        "  if (!root) return;\n"
+        "  if (!user) {\n"
+        "    root.innerHTML = '<p class=\"muted\">No user specified.</p>';\n"
+        "    return;\n"
+        "  }\n"
+        "\n"
+        "  var state = { tab: 'articles', pages: { articles: 1, comments: 1 } };\n"
+        "\n"
+        "  function renderActivity(panel, data, kind) {\n"
+        "    var html = '';\n"
+        "    var items = (data && data.items) || [];\n"
+        "    if (!items.length) {\n"
+        "      html = '<p class=\"muted\">Nothing here yet.</p>';\n"
+        "    } else {\n"
+        "      for (var i = 0; i < items.length; i++) {\n"
+        "        var it = items[i];\n"
+        "        if (kind === 'articles') {\n"
+        "          html += '<div class=\"activity-item\">' +\n"
+        "            '<a class=\"title\" href=\"' + esc(it.url) + '\">' +\n"
+        "            esc(it.title) + '</a> <span class=\"activity-kind\">' +\n"
+        "            esc(it.activity) + ' &middot; ' + esc(it.timestamp || '') +\n"
+        "            '</span></div>';\n"
+        "        } else {\n"
+        "          html += '<div class=\"activity-item\">' + esc(it.body) +\n"
+        "            ' <span class=\"activity-kind\">' + esc(it.vote_count) +\n"
+        "            ' points &middot; ' + esc(it.timestamp || '') +\n"
+        "            '</span></div>';\n"
+        "        }\n"
+        "      }\n"
+        "    }\n"
+        "    var total = (data && data.total) || 0;\n"
+        "    var perPage = (data && data.per_page) || 20;\n"
+        "    var page = state.pages[kind];\n"
+        "    var hasNext = page * perPage < total;\n"
+        "    html += '<div class=\"pager\">' +\n"
+        "      '<button type=\"button\" class=\"page-btn\" data-dir=\"-1\"' +\n"
+        "      (page <= 1 ? ' disabled' : '') + '>Prev</button>' +\n"
+        "      '<span>Page ' + page + '</span>' +\n"
+        "      '<button type=\"button\" class=\"page-btn\" data-dir=\"1\"' +\n"
+        "      (hasNext ? '' : ' disabled') + '>Next</button></div>';\n"
+        "    panel.innerHTML = html;\n"
+        "    var btns = panel.querySelectorAll('button.page-btn');\n"
+        "    for (var j = 0; j < btns.length; j++) {\n"
+        "      btns[j].addEventListener('click', function () {\n"
+        "        if (this.disabled) return;\n"
+        "        state.pages[kind] += Number(this.getAttribute('data-dir'));\n"
+        "        if (state.pages[kind] < 1) state.pages[kind] = 1;\n"
+        "        loadActivity(panel, kind);\n"
+        "      });\n"
+        "    }\n"
+        "  }\n"
+        "\n"
+        "  function loadActivity(panel, kind) {\n"
+        "    var url = '/api/users/' + encodeURIComponent(user) + '/' + kind +\n"
+        "      '?page=' + state.pages[kind];\n"
+        "    fetch(url)\n"
+        "      .then(function (r) { return r.ok ? r.json() : null; })\n"
+        "      .then(function (data) {\n"
+        "        if (data) renderActivity(panel, data, kind);\n"
+        "      })\n"
+        "      .catch(function () {});\n"
+        "  }\n"
+        "\n"
+        "  function renderProfile(p) {\n"
+        "    if (p.is_private) {\n"
+        "      root.innerHTML = '<div class=\"profile-header\"><h2>' +\n"
+        "        esc(p.username) + '</h2><p class=\"private-note\">' +\n"
+        "        'This profile is private.</p></div>';\n"
+        "      return;\n"
+        "    }\n"
+        "    root.innerHTML = '<div class=\"profile-header\">' +\n"
+        "      '<h2>' + esc(p.username) + '</h2>' +\n"
+        "      '<div class=\"profile-karma\">' + esc(p.karma) + ' karma</div>' +\n"
+        "      (p.bio ? '<p class=\"profile-bio\">' + esc(p.bio) + '</p>' : '') +\n"
+        "      '<div class=\"profile-stats\">' + esc(p.submission_count) +\n"
+        "      ' submitted &middot; ' + esc(p.vote_count) + ' votes &middot; ' +\n"
+        "      esc(p.comment_count) + ' comments</div></div>' +\n"
+        "      '<div class=\"profile-tabs\">' +\n"
+        "      '<button type=\"button\" class=\"tab active\" data-tab=\"articles\">' +\n"
+        "      'Articles</button>' +\n"
+        "      '<button type=\"button\" class=\"tab\" data-tab=\"comments\">' +\n"
+        "      'Comments</button></div>' +\n"
+        "      '<div id=\"activity\"></div>';\n"
+        "    var panel = document.getElementById('activity');\n"
+        "    var tabs = root.querySelectorAll('button.tab');\n"
+        "    for (var i = 0; i < tabs.length; i++) {\n"
+        "      tabs[i].addEventListener('click', function () {\n"
+        "        var kind = this.getAttribute('data-tab');\n"
+        "        state.tab = kind;\n"
+        "        for (var k = 0; k < tabs.length; k++) {\n"
+        "          tabs[k].classList.toggle('active',\n"
+        "            tabs[k].getAttribute('data-tab') === kind);\n"
+        "        }\n"
+        "        loadActivity(panel, kind);\n"
+        "      });\n"
+        "    }\n"
+        "    loadActivity(panel, 'articles');\n"
+        "  }\n"
+        "\n"
+        "  fetch('/api/users/' + encodeURIComponent(user))\n"
+        "    .then(function (r) {\n"
+        "      if (r.status === 404) return { _missing: true };\n"
+        "      return r.ok ? r.json() : null;\n"
+        "    })\n"
+        "    .then(function (p) {\n"
+        "      if (!p) { root.innerHTML = '<p class=\"muted\">Could not load profile.</p>'; return; }\n"
+        "      if (p._missing) { root.innerHTML = '<p class=\"muted\">User not found.</p>'; return; }\n"
+        "      renderProfile(p);\n"
+        "    })\n"
+        "    .catch(function () {\n"
+        "      root.innerHTML = '<p class=\"muted\">Could not load profile.</p>';\n"
+        "    });\n"
+        "})();\n"
+    )
+
+
+def render_leaderboard_js() -> str:
+    # Fetches the top users by karma from /api/users/leaderboard and renders a
+    # ranked list; each username links to its profile page.
+    return (
+        "(function () {\n"
+        "  function esc(s) {\n"
+        '    var d = document.createElement("div");\n'
+        '    d.textContent = s == null ? "" : String(s);\n'
+        "    return d.innerHTML;\n"
+        "  }\n"
+        '  var root = document.getElementById("leaderboard");\n'
+        "  if (!root) return;\n"
+        "  fetch('/api/users/leaderboard')\n"
+        "    .then(function (r) { return r.ok ? r.json() : []; })\n"
+        "    .then(function (rows) {\n"
+        "      if (!rows.length) {\n"
+        "        root.innerHTML = '<li class=\"muted\">No users yet.</li>';\n"
+        "        return;\n"
+        "      }\n"
+        "      var html = '';\n"
+        "      for (var i = 0; i < rows.length; i++) {\n"
+        "        var u = rows[i];\n"
+        "        html += '<li><span class=\"lb-rank\">' + esc(u.rank) +\n"
+        "          '.</span><a class=\"author\" href=\"user.html?u=' +\n"
+        "          encodeURIComponent(u.username) + '\">' + esc(u.username) +\n"
+        "          '</a><span class=\"lb-karma\">' + esc(u.karma) +\n"
+        "          ' karma</span></li>';\n"
+        "      }\n"
+        "      root.innerHTML = html;\n"
+        "    })\n"
+        "    .catch(function () {\n"
+        "      root.innerHTML = '<li class=\"muted\">Could not load leaderboard.</li>';\n"
+        "    });\n"
+        "})();\n"
+    )
+
+
 def write_feeds(out_path: Path, stories: list[Story]) -> list[Path]:
     """Write the main RSS feed plus one feed per category with stories.
 
@@ -760,6 +1062,14 @@ def generate_site(
     (out_path / "search.js").write_text(render_search_js(), encoding="utf-8")
     (out_path / "vote.js").write_text(render_vote_js(), encoding="utf-8")
     (out_path / "comments.js").write_text(render_comments_js(), encoding="utf-8")
+    (out_path / "user.html").write_text(render_user_page(), encoding="utf-8")
+    (out_path / "user.js").write_text(render_user_js(), encoding="utf-8")
+    (out_path / "leaderboard.html").write_text(
+        render_leaderboard_page(), encoding="utf-8"
+    )
+    (out_path / "leaderboard.js").write_text(
+        render_leaderboard_js(), encoding="utf-8"
+    )
     write_feeds(out_path, stories)
     return out_path
 
