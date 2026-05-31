@@ -4,10 +4,11 @@ Run with ``uvicorn src.api:app``. The static site (``docs/``) calls
 ``/api/search`` for its live search box.
 """
 
+import os
 import uuid
 from pathlib import Path
 
-from fastapi import Body, Cookie, FastAPI, HTTPException, Query, Request
+from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
@@ -29,6 +30,14 @@ from src.profiles import (
 )
 from src.search import SearchError, search_stories
 from src.source_health import health_dashboard
+from src.submissions import (
+    SubmissionError,
+    approve_submission,
+    create_submission,
+    find_duplicates,
+    list_pending,
+    reject_submission,
+)
 from src.voting import VoteError, cast_vote, get_distribution
 
 app = FastAPI(title="Important News Search")
@@ -303,6 +312,134 @@ def api_set_privacy(username: str, payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         session.close()
+
+
+def _submission_status(exc: SubmissionError) -> int:
+    return 404 if exc.not_found else 400
+
+
+# Shared moderation secret. Approve/reject are privileged actions, so they are
+# gated behind a token (X-Admin-Token header) rather than the open cookie
+# identity the rest of the app uses for voting/commenting.
+ADMIN_TOKEN = os.environ.get("SUBMISSIONS_ADMIN_TOKEN", "swarm-admin")
+
+
+def _require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+    if x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="admin token required")
+
+
+@app.post("/api/submissions")
+def api_create_submission(
+    payload: dict = Body(...),
+    voter_id: str | None = Cookie(default=None),
+) -> JSONResponse:
+    title = payload.get("title")
+    if title is None:
+        raise HTTPException(status_code=400, detail="title required")
+
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+
+    session = _session()
+    try:
+        submission = create_submission(
+            session,
+            title,
+            url=payload.get("url"),
+            description=payload.get("description"),
+            user_id=voter_id,
+            category=payload.get("category"),
+        )
+        result = {
+            "id": submission.id,
+            "user_id": submission.user_id,
+            "title": submission.title,
+            "url": submission.url,
+            "description": submission.description,
+            "category": submission.category,
+            "status": submission.status,
+        }
+    except SubmissionError as exc:
+        raise HTTPException(status_code=_submission_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+    response = JSONResponse(result, status_code=201)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.get("/api/submissions")
+def api_list_submissions(
+    limit: int = Query(50, ge=1, le=200, description="max pending rows"),
+) -> list[dict]:
+    session = _session()
+    try:
+        return list_pending(session, limit)
+    except SubmissionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/submissions/duplicates")
+def api_submission_duplicates(
+    title: str = Query(..., description="candidate title"),
+    url: str | None = Query(None, description="candidate url"),
+) -> list[dict]:
+    session = _session()
+    try:
+        return find_duplicates(session, title, url)
+    finally:
+        session.close()
+
+
+@app.post("/api/submissions/{submission_id}/approve")
+def api_approve_submission(
+    submission_id: int, _: None = Depends(_require_admin)
+) -> dict:
+    session = _session()
+    try:
+        story = approve_submission(session, submission_id)
+        return {"submission_id": submission_id, "story_id": story.id, "status": "approved"}
+    except SubmissionError as exc:
+        raise HTTPException(status_code=_submission_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/submissions/{submission_id}/reject")
+def api_reject_submission(
+    submission_id: int, _: None = Depends(_require_admin)
+) -> dict:
+    session = _session()
+    try:
+        submission = reject_submission(session, submission_id)
+        return {"submission_id": submission.id, "status": submission.status}
+    except SubmissionError as exc:
+        raise HTTPException(status_code=_submission_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/submit", response_class=HTMLResponse)
+def submit_page(request: Request) -> HTMLResponse:
+    return _TEMPLATES.TemplateResponse(request, "submit.html", {})
+
+
+@app.get("/moderation", response_class=HTMLResponse)
+def moderation_page(request: Request) -> HTMLResponse:
+    session = _session()
+    try:
+        pending = list_pending(session, 200)
+    finally:
+        session.close()
+    return _TEMPLATES.TemplateResponse(
+        request, "moderation.html", {"submissions": pending}
+    )
 
 
 @app.get("/api/sources/health")

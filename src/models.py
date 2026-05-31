@@ -213,6 +213,34 @@ class ExternalDiscussion(Base):
     story: Mapped["Story"] = relationship()
 
 
+class Submission(Base):
+    __tablename__ = "submissions"
+    # The moderation queue scans pending rows oldest-first; this index keeps that
+    # scan cheap and gives a stable FIFO order.
+    __table_args__ = (Index("ix_submissions_status_created", "status", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Submitter id (cookie uuid / username), matching the user_id used elsewhere.
+    user_id: Mapped[str | None] = mapped_column(default=None, index=True)
+    title: Mapped[str]
+    # NULL for a self-post (text-only submission); otherwise the linked story URL.
+    url: Mapped[str | None] = mapped_column(default=None)
+    description: Mapped[str | None] = mapped_column(Text, default=None)
+    # "ai" | "aerospace" | "both" | "unknown"
+    category: Mapped[str] = mapped_column(default="unknown")
+    # "pending" | "approved" | "rejected"
+    status: Mapped[str] = mapped_column(default="pending")
+    created_at: Mapped[datetime]
+    # Set when an approve/reject decision is taken; None while still pending.
+    decided_at: Mapped[datetime | None] = mapped_column(default=None)
+    # The Story minted on approval; None until approved.
+    story_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stories.id"), default=None
+    )
+    # Karma granted to the submitter when this submission was approved.
+    points: Mapped[int] = mapped_column(default=0)
+
+
 class UserProfile(Base):
     """Public profile and cached reputation for a user identified by username.
 

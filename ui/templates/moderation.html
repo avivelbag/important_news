@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Moderation Queue</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; color: #1a1a1a; }
+    h1 { margin-bottom: 1rem; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; font-size: 0.9rem; vertical-align: top; }
+    th { background: #fafafa; }
+    .cat { display: inline-block; padding: 0.1rem 0.4rem; border-radius: 4px; background: #eef; font-size: 0.8rem; }
+    button { padding: 0.3rem 0.7rem; border: 0; border-radius: 5px; cursor: pointer; font-weight: 600; }
+    .approve { background: #2ca02c; color: #fff; }
+    .reject { background: #d62728; color: #fff; margin-left: 0.3rem; }
+    .empty { color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Moderation Queue ({{ submissions|length }} pending)</h1>
+  {% if submissions %}
+  <table>
+    <thead>
+      <tr><th>Title</th><th>URL</th><th>Category</th><th>By</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for s in submissions %}
+      <tr id="row-{{ s.id }}">
+        <td>{{ s.title }}{% if s.description %}<br><small>{{ s.description }}</small>{% endif %}</td>
+        <td>{% if s.url %}<a href="{{ s.url }}">{{ s.url }}</a>{% else %}<em>self-post</em>{% endif %}</td>
+        <td><span class="cat">{{ s.category }}</span></td>
+        <td>{{ s.user_id or "anon" }}</td>
+        <td>
+          <button class="approve" onclick="decide({{ s.id }}, 'approve')">Approve</button>
+          <button class="reject" onclick="decide({{ s.id }}, 'reject')">Reject</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No pending submissions.</p>
+  {% endif %}
+
+  <script>
+    function adminToken() {
+      var token = sessionStorage.getItem("adminToken");
+      if (!token) {
+        token = window.prompt("Admin token:");
+        if (token) sessionStorage.setItem("adminToken", token);
+      }
+      return token;
+    }
+
+    function decide(id, action) {
+      var token = adminToken();
+      if (!token) return;
+      fetch("/api/submissions/" + id + "/" + action, {
+        method: "POST",
+        headers: { "X-Admin-Token": token },
+      })
+        .then(function (r) {
+          if (r.ok) {
+            var row = document.getElementById("row-" + id);
+            if (row) row.remove();
+          } else {
+            // A stale/wrong token must not stay cached, or every later click
+            // silently re-fails with the same bad value.
+            if (r.status === 403) sessionStorage.removeItem("adminToken");
+            window.alert("Action failed (" + r.status + ").");
+          }
+        });
+    }
+  </script>
+</body>
+</html>
