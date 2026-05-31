@@ -381,6 +381,37 @@ def render_css() -> str:
         ".comment-replies { margin-left: 1rem; border-left: 1px solid #ddd; padding-left: 0.6rem; }\n"
         ".comment-meta { color: var(--muted); font-size: 0.72rem; }\n"
         ".comment-body { font-size: 0.82rem; white-space: pre-wrap; }\n"
+        ".comment.collapsed > .comment-content { display: none; }\n"
+        ".comment-votes { display: inline-flex; align-items: center; gap: 0.2rem; }\n"
+        "button.cvote {\n"
+        "  border: none;\n"
+        "  background: transparent;\n"
+        "  color: var(--muted);\n"
+        "  font: inherit;\n"
+        "  line-height: 1;\n"
+        "  padding: 0;\n"
+        "  cursor: pointer;\n"
+        "}\n"
+        "button.cvote:hover { color: var(--accent); }\n"
+        "button.cvote.voted { color: var(--accent); font-weight: bold; }\n"
+        ".comment-score { font-weight: bold; color: #444; }\n"
+        ".comment-op {\n"
+        "  color: var(--accent);\n"
+        "  font-weight: bold;\n"
+        "  border: 1px solid var(--accent);\n"
+        "  border-radius: 3px;\n"
+        "  padding: 0 0.2rem;\n"
+        "  font-size: 0.68rem;\n"
+        "}\n"
+        "button.comment-collapse-toggle {\n"
+        "  border: none;\n"
+        "  background: transparent;\n"
+        "  color: var(--muted);\n"
+        "  font: inherit;\n"
+        "  cursor: pointer;\n"
+        "  padding: 0;\n"
+        "}\n"
+        ".comment-sort { font-size: 0.75rem; color: var(--muted); margin-bottom: 0.3rem; }\n"
         ".comment-form textarea { width: 100%; max-width: 480px; font: inherit; }\n"
         ".comments-empty { color: var(--muted); font-style: italic; }\n"
         "ul.discussions-external { list-style: none; padding: 0; margin: 0.3rem 0 0; "
@@ -665,8 +696,12 @@ def render_vote_js() -> str:
 def render_comments_js() -> str:
     # Lazily loads each story's thread from /api/articles/{id}/comments when its
     # "N comments" button is first toggled, renders the nested tree (indenting
-    # replies and stubbing [deleted] nodes), and posts new comments / replies /
-    # votes back through the comments API. Cookies carry the author id.
+    # replies and stubbing [deleted] nodes), and posts new comments / replies
+    # back through the comments API. Each comment carries up/down vote arrows
+    # wired to /api/comments/{id}/upvote|downvote with optimistic score updates
+    # (reverted on error), a per-thread sort control (score/newest/oldest), and
+    # low-score comments (collapsed flag) hidden behind a show/hide toggle.
+    # Cookies carry the author/voter id.
     return (
         "(function () {\n"
         "  function esc(s) {\n"
@@ -681,6 +716,7 @@ def render_comments_js() -> str:
         '      ? \'<a class="author" href="user.html?u=\' +\n'
         "        encodeURIComponent(c.user_id) + '\">' + esc(author) + '</a>'\n"
         "      : esc(author);\n"
+        "    var opHtml = c.is_op ? ' <span class=\"comment-op\">OP</span>' : '';\n"
         '    var children = "";\n'
         "    if (c.replies && c.replies.length) {\n"
         "      for (var i = 0; i < c.replies.length; i++) {\n"
@@ -693,30 +729,99 @@ def render_comments_js() -> str:
         "      esc(c.id) + '\" hidden>' +\n"
         '      \'<textarea name="body" placeholder="Reply"></textarea>\' +\n'
         '      \'<button type="submit">Post reply</button></form>\';\n'
-        '    return \'<div class="comment" data-comment-id="\' + esc(c.id) + \'">\' +\n'
-        '      \'<div class="comment-meta">\' + authorHtml +\n'
-        '      \' &middot; <span class="comment-votes">\' + esc(c.vote_count) +\n'
-        "      ' points</span> &middot; ' + esc(c.created_at || '') + '</div>' +\n"
+        "    var up = c.user_vote === 1 ? ' voted' : '';\n"
+        "    var down = c.user_vote === -1 ? ' voted' : '';\n"
+        "    var score = (c.score == null ? c.vote_count : c.score);\n"
+        "    var votes = c.deleted ? '' :\n"
+        '      \'<span class="comment-votes">\' +\n'
+        "      '<button type=\"button\" class=\"cvote up' + up +\n"
+        "      '\" aria-label=\"Upvote\">&#9650;</button>' +\n"
+        "      '<span class=\"comment-score\">' + esc(score) + ' points</span>' +\n"
+        "      '<button type=\"button\" class=\"cvote down' + down +\n"
+        "      '\" aria-label=\"Downvote\">&#9660;</button></span> &middot; ';\n"
+        "    var collapsed = c.collapsed ? ' collapsed' : '';\n"
+        "    var toggle = c.collapsed ?\n"
+        '      \' <button type="button" class="comment-collapse-toggle">\' +\n'
+        "      '[+]</button>' : '';\n"
+        '    return \'<div class="comment\' + collapsed + \'" data-comment-id="\' +\n'
+        "      esc(c.id) + '\" data-user-vote=\"' + esc(c.user_vote || 0) + '\">' +\n"
+        '      \'<div class="comment-meta">\' + votes + authorHtml + opHtml +\n'
+        "      ' &middot; ' + esc(c.created_at || '') + toggle + '</div>' +\n"
+        '      \'<div class="comment-content">\' +\n'
         '      \'<div class="comment-body">\' + esc(c.body) + \'</div>\' + reply +\n'
-        '      \'<div class="comment-replies">\' + children + \'</div></div>\';\n'
+        '      \'<div class="comment-replies">\' + children + \'</div></div></div>\';\n'
         "  }\n"
         "\n"
         "  function load(story, panel) {\n"
         '    var id = story.getAttribute("data-story-id");\n'
-        '    fetch("/api/articles/" + encodeURIComponent(id) + "/comments")\n'
+        "    var sort = panel.getAttribute('data-sort') || 'score';\n"
+        '    fetch("/api/articles/" + encodeURIComponent(id) + "/comments?sort=" +\n'
+        "      encodeURIComponent(sort), { credentials: \"same-origin\" })\n"
         "      .then(function (r) { return r.ok ? r.json() : []; })\n"
         "      .then(function (thread) {\n"
-        '        var html = "";\n'
+        "        var html = '<div class=\"comment-sort\">Sort: ' +\n"
+        "          '<select class=\"comment-sort-select\">' +\n"
+        "          '<option value=\"score\">Score</option>' +\n"
+        "          '<option value=\"newest\">Newest</option>' +\n"
+        "          '<option value=\"oldest\">Oldest</option></select></div>';\n"
         "        for (var i = 0; i < thread.length; i++) {\n"
         "          html += renderNode(thread[i]);\n"
         "        }\n"
-        "        if (!html) html = '<p class=\"comments-empty\">No comments yet.</p>';\n"
         "        html += '<form class=\"comment-form\">' +\n"
         "          '<textarea name=\"body\" placeholder=\"Add a comment\"></textarea>' +\n"
         "          '<button type=\"submit\">Post</button></form>';\n"
         "        panel.innerHTML = html;\n"
+        "        var sel = panel.querySelector('.comment-sort-select');\n"
+        "        if (sel) sel.value = sort;\n"
         "      })\n"
         "      .catch(function () {});\n"
+        "  }\n"
+        "\n"
+        "  function vote(comment, direction) {\n"
+        "    var id = comment.getAttribute('data-comment-id');\n"
+        "    if (!id) return;\n"
+        "    var prev = Number(comment.getAttribute('data-user-vote')) || 0;\n"
+        "    var next = prev === direction ? 0 : direction;\n"
+        "    var scoreEl = comment.querySelector('.comment-score');\n"
+        "    var prevText = scoreEl ? scoreEl.textContent : null;\n"
+        "    // Optimistic: shift the displayed score by the vote delta at once.\n"
+        "    applyVote(comment, next, scoreEl, prev !== 0 || next !== 0 ?\n"
+        "      (next - prev) : 0);\n"
+        "    var path = direction === 1 ? 'upvote' : 'downvote';\n"
+        "    fetch('/api/comments/' + encodeURIComponent(id) + '/' + path, {\n"
+        '      method: "POST",\n'
+        '      headers: { "Content-Type": "application/json" },\n'
+        '      credentials: "same-origin"\n'
+        "    })\n"
+        "      .then(function (r) { return r.ok ? r.json() : null; })\n"
+        "      .then(function (data) {\n"
+        "        if (!data) throw new Error('vote failed');\n"
+        "        comment.setAttribute('data-user-vote', data.user_vote);\n"
+        "        if (scoreEl) scoreEl.textContent = data.score + ' points';\n"
+        "        markVote(comment, data.user_vote);\n"
+        "      })\n"
+        "      .catch(function () {\n"
+        "        // Revert the optimistic change on any error.\n"
+        "        comment.setAttribute('data-user-vote', prev);\n"
+        "        if (scoreEl && prevText != null) scoreEl.textContent = prevText;\n"
+        "        markVote(comment, prev);\n"
+        "      });\n"
+        "  }\n"
+        "\n"
+        "  function applyVote(comment, next, scoreEl, delta) {\n"
+        "    comment.setAttribute('data-user-vote', next);\n"
+        "    markVote(comment, next);\n"
+        "    if (scoreEl && delta) {\n"
+        "      var cur = parseInt(scoreEl.textContent, 10);\n"
+        "      if (!isNaN(cur)) scoreEl.textContent = (cur + delta) + ' points';\n"
+        "    }\n"
+        "  }\n"
+        "\n"
+        "  function markVote(comment, value) {\n"
+        "    var up = comment.querySelector(':scope > .comment-meta .cvote.up');\n"
+        "    var down = comment.querySelector(':scope > .comment-meta .cvote.down');\n"
+        "    if (up) up.classList.toggle('voted', value === 1);\n"
+        "    if (down) down.classList.toggle('voted', value === -1);\n"
         "  }\n"
         "\n"
         "  function submit(story, panel, form) {\n"
@@ -755,11 +860,25 @@ def render_comments_js() -> str:
         "            submit(story, panel, e.target);\n"
         "          }\n"
         "        });\n"
-        '        panel.addEventListener("click", function (e) {\n'
+        '        panel.addEventListener("change", function (e) {\n'
         "          if (e.target &&\n"
-        '              e.target.classList.contains("comment-reply-toggle")) {\n'
-        '            var f = e.target.nextElementSibling;\n'
+        '              e.target.classList.contains("comment-sort-select")) {\n'
+        "            panel.setAttribute('data-sort', e.target.value);\n"
+        "            load(story, panel);\n"
+        "          }\n"
+        "        });\n"
+        '        panel.addEventListener("click", function (e) {\n'
+        "          var t = e.target;\n"
+        "          if (!t) return;\n"
+        '          if (t.classList.contains("comment-reply-toggle")) {\n'
+        '            var f = t.nextElementSibling;\n'
         "            if (f) f.hidden = !f.hidden;\n"
+        '          } else if (t.classList.contains("comment-collapse-toggle")) {\n'
+        '            var node = t.closest(".comment");\n'
+        '            if (node) node.classList.toggle("collapsed");\n'
+        '          } else if (t.classList.contains("cvote")) {\n'
+        '            var c = t.closest(".comment");\n'
+        "            if (c) vote(c, t.classList.contains('up') ? 1 : -1);\n"
         "          }\n"
         "        });\n"
         "      })(stories[i]);\n"
