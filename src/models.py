@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -34,7 +34,10 @@ class Story(Base):
     source_name: Mapped[str]
     topic: Mapped[str]  # "ai" | "aerospace" | "both"
     raw_score: Mapped[int] = mapped_column(default=0)
+    # vote_count is the denormalised net points (sum of vote_values); downvotes
+    # counts only the -1 votes, kept for the distribution display.
     vote_count: Mapped[int] = mapped_column(default=0)
+    downvotes: Mapped[int] = mapped_column(default=0)
     computed_score: Mapped[float] = mapped_column(default=0.0)
     published_at: Mapped[datetime]
     fetched_at: Mapped[datetime]
@@ -60,13 +63,23 @@ class Story(Base):
 
 
 class Vote(Base):
-    """A single upvote cast by a user (or identified by IP) for a story."""
+    """A single vote cast by a user (or identified by IP) for a story."""
 
     __tablename__ = "votes"
+    # SQLite treats NULL user_ids as distinct, so anonymous votes with no
+    # user_id never collide on this constraint; only an identified user is
+    # limited to one row per story (upsert target for vote changes/reversals).
+    __table_args__ = (UniqueConstraint("user_id", "story_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     story_id: Mapped[int] = mapped_column(ForeignKey("stories.id"))
+    # Anonymous voter id (e.g. a cookie uuid); None for legacy/IP-only votes.
+    user_id: Mapped[str | None] = mapped_column(default=None)
+    # -1 / 0 / +1; net of these per story is the story's vote_count.
+    vote_value: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime]
+    # Set when an existing vote is changed or reversed; None on first insert.
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
     # Hashed IP for dedup; None when the client does not provide one
     ip_hash: Mapped[str | None] = mapped_column(default=None)
 

@@ -11,6 +11,7 @@ _DEFAULT_HALF_LIFE_HOURS = 168.0
 _DEFAULT_SOURCE_WEIGHT = 1.0
 _DEFAULT_CATEGORY_BOOST = 1.0
 _DEFAULT_TRENDING_TOPICS = ("ai",)
+_DEFAULT_VOTE_WEIGHT = 0.1
 
 
 def _parse_float(value, fallback):
@@ -26,6 +27,7 @@ class ScoreWeights:
     source_weight: float = _DEFAULT_SOURCE_WEIGHT
     category_boost: float = _DEFAULT_CATEGORY_BOOST
     trending_topics: tuple = _DEFAULT_TRENDING_TOPICS
+    vote_weight: float = _DEFAULT_VOTE_WEIGHT
 
     @classmethod
     def from_env(cls, env=None):
@@ -51,6 +53,9 @@ class ScoreWeights:
                 env.get("SCORER_CATEGORY_BOOST"), _DEFAULT_CATEGORY_BOOST
             ),
             trending_topics=topics,
+            vote_weight=_parse_float(
+                env.get("SCORER_VOTE_WEIGHT"), _DEFAULT_VOTE_WEIGHT
+            ),
         )
 
 
@@ -74,7 +79,11 @@ def compute_score(
     decay = 0.5 ** (hours_old / weights.half_life_hours)
     quality = max(0.0, quality_weight) ** weights.source_weight
     boost = weights.category_boost if story.topic in weights.trending_topics else 1.0
-    return decay * quality * boost
+    # Votes add additively so a story with vote_count == 0 scores exactly as
+    # it did before voting existed. A transient (unsaved) story has vote_count
+    # None until the column default applies on insert, so coerce to 0.
+    votes = story.vote_count or 0
+    return decay * quality * boost + votes * weights.vote_weight
 
 
 def recompute_scores(engine, now: dt.datetime | None = None, weights=None) -> int:
