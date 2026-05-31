@@ -27,13 +27,7 @@ class Source(Base):
 
 
 class SourceHealth(Base):
-    """Rolled-up health state for a single source, updated after every fetch.
-
-    Exactly one row per source (``source_id`` is unique). ``status`` is derived
-    from ``consecutive_failures`` against a configurable threshold and is one of
-    ``"healthy"`` (0 failures), ``"degraded"`` (below threshold) or ``"broken"``
-    (at/above threshold) so the dashboard can render a green/yellow/red badge.
-    """
+    """Rolled-up health state for a single source, one row per source."""
 
     __tablename__ = "source_health"
 
@@ -48,11 +42,7 @@ class SourceHealth(Base):
 
 
 class SourceFetchLog(Base):
-    """Append-only audit trail of every fetch attempt against a source.
-
-    One row per fetch; ``status`` is ``"success"`` or ``"error"``. Used to
-    compute success rate and average items-per-source for the health dashboard.
-    """
+    """Append-only audit trail of every fetch attempt against a source."""
 
     __tablename__ = "source_fetch_logs"
 

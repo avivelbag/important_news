@@ -1,11 +1,3 @@
-"""Source health tracking: fetch logging, status rollup, and dashboard report.
-
-The scraper calls :func:`record_fetch` after every source fetch (success or
-failure). That keeps a :class:`~src.models.SourceFetchLog` audit trail and
-maintains the one-row-per-source :class:`~src.models.SourceHealth` summary used
-to drive the health dashboard and to skip broken sources on subsequent runs.
-"""
-
 import datetime as dt
 
 from sqlalchemy import func
@@ -30,12 +22,7 @@ _STATUS_COLORS = {
 def status_for_failures(
     consecutive_failures: int, threshold: int = DEFAULT_FAILURE_THRESHOLD
 ) -> str:
-    """Map a consecutive-failure count to a health status string.
-
-    Zero failures is ``healthy``; anything at or above *threshold* is
-    ``broken``; in between is ``degraded``. A non-positive *threshold* is
-    treated as 1 so a single failure already trips ``broken``.
-    """
+    """Map a consecutive-failure count to a health status string."""
     if consecutive_failures <= 0:
         return STATUS_HEALTHY
     if consecutive_failures >= max(threshold, 1):
@@ -49,7 +36,6 @@ def status_color(status: str) -> str:
 
 
 def get_or_create_health(session, source_id: int) -> models.SourceHealth:
-    """Return the SourceHealth row for *source_id*, creating it if absent."""
     health = (
         session.query(models.SourceHealth)
         .filter_by(source_id=source_id)
@@ -72,14 +58,7 @@ def record_fetch(
     error_message: str | None = None,
     failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
 ) -> models.SourceHealth:
-    """Log a fetch attempt and update the source's rolled-up health.
-
-    *status* must be ``"success"`` or ``"error"``. A success resets
-    ``consecutive_failures`` to 0 and clears ``last_error``; an error increments
-    the counter and stores *error_message*. The resulting ``status`` is derived
-    via :func:`status_for_failures`. Always appends a SourceFetchLog row for the
-    audit trail. The caller is responsible for committing the session.
-    """
+    """Log a fetch attempt and update the source's rolled-up health."""
     if status not in ("success", "error"):
         raise ValueError(f"invalid fetch status: {status!r}")
 
@@ -113,11 +92,7 @@ def is_source_broken(
     source_name: str,
     failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
 ) -> bool:
-    """Return True when the named source is currently in the ``broken`` state.
-
-    Unknown sources (never fetched) are considered healthy, so a brand-new
-    source is never skipped on its first run.
-    """
+    """Return True when the named source is currently in the broken state."""
     health = (
         session.query(models.SourceHealth)
         .join(models.Source, models.Source.id == models.SourceHealth.source_id)
@@ -132,7 +107,6 @@ def is_source_broken(
 
 
 def _source_stats(session, source_id: int) -> tuple[int, int, float]:
-    """Return (total_fetches, success_count, avg_items) from the fetch log."""
     total = (
         session.query(func.count(models.SourceFetchLog.id))
         .filter_by(source_id=source_id)
@@ -154,7 +128,6 @@ def _source_stats(session, source_id: int) -> tuple[int, int, float]:
 
 
 def _last_article_time(session, source_id: int) -> dt.datetime | None:
-    """Return the most recent story fetched_at for a source, or None."""
     return (
         session.query(func.max(models.Story.fetched_at))
         .filter_by(source_id=source_id)
@@ -163,7 +136,7 @@ def _last_article_time(session, source_id: int) -> dt.datetime | None:
 
 
 def _naive(value: dt.datetime) -> dt.datetime:
-    """Drop tzinfo so tz-aware *now* compares against naive stored datetimes."""
+    # SQLite stores naive datetimes; drop tzinfo so tz-aware "now" compares.
     if value.tzinfo is not None:
         return value.astimezone(dt.timezone.utc).replace(tzinfo=None)
     return value
@@ -176,14 +149,7 @@ def source_report(
     stale_days: int = DEFAULT_STALE_DAYS,
     failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
 ) -> list[dict]:
-    """Build a per-source health summary for the dashboard.
-
-    Each entry carries the status badge (with colour), consecutive failure
-    count, last fetch/error, success rate, average items per successful fetch,
-    most recent article time, and a ``stale`` flag set when no article has been
-    seen within *stale_days*. Broken sources sort first so they surface at the
-    top of the dashboard.
-    """
+    """Build a per-source health summary (broken first) for the dashboard."""
     now_naive = _naive(now)
     stale_cutoff = now_naive - dt.timedelta(days=stale_days)
     rows: list[dict] = []
@@ -225,11 +191,7 @@ def source_report(
 
 
 def health_metrics(rows: list[dict]) -> dict:
-    """Aggregate per-source rows into dashboard-level metrics.
-
-    Returns total/healthy/degraded/broken/stale counts plus the percentage of
-    healthy and broken sources (0.0 when there are no sources).
-    """
+    """Aggregate per-source rows into dashboard-level metrics."""
     total = len(rows)
     healthy = sum(1 for r in rows if r["status"] == STATUS_HEALTHY)
     degraded = sum(1 for r in rows if r["status"] == STATUS_DEGRADED)

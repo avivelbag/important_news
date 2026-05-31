@@ -4,13 +4,21 @@ Run with ``uvicorn src.api:app``. The static site (``docs/``) calls
 ``/api/search`` for its live search box.
 """
 
-from fastapi import FastAPI, HTTPException, Query
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
 
 from src.db import get_engine, get_session, init_db
 from src.search import SearchError, search_stories
 from src.source_health import health_dashboard
 
 app = FastAPI(title="Important News Search")
+
+_TEMPLATES = Jinja2Templates(
+    directory=str(Path(__file__).resolve().parent.parent / "ui" / "templates")
+)
 
 _engine = None
 
@@ -46,14 +54,24 @@ def api_search(
 
 @app.get("/api/sources/health")
 def api_sources_health() -> dict:
-    """Return the source health dashboard payload.
-
-    Responds with ``{"metrics": {...}, "sources": [...]}`` where each source
-    carries a green/yellow/red status badge, consecutive failure count, success
-    rate, average items per fetch, last error, and a staleness flag.
-    """
+    """Return the source health dashboard payload as JSON."""
     global _engine
     if _engine is None:
         _engine = get_engine()
         init_db(_engine)
     return health_dashboard(_engine)
+
+
+@app.get("/health", response_class=HTMLResponse)
+def health_page(request: Request) -> HTMLResponse:
+    """Render the source health dashboard as an HTML page with status badges."""
+    global _engine
+    if _engine is None:
+        _engine = get_engine()
+        init_db(_engine)
+    data = health_dashboard(_engine)
+    return _TEMPLATES.TemplateResponse(
+        request,
+        "health.html",
+        {"metrics": data["metrics"], "sources": data["sources"]},
+    )
