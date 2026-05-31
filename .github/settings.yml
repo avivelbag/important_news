@@ -1,0 +1,14 @@
+# Declarative repository settings for the Probot "Settings" GitHub app.
+# https://github.com/apps/settings
+#
+# This configures GitHub Pages to serve the generated static site from the
+# `docs/` directory on the default branch. If the Settings app is not
+# installed, configure the same source manually under Settings -> Pages
+# (Deploy from a branch -> main -> /docs). See README.md.
+repository:
+  has_pages: true
+
+pages:
+  source:
+    branch: main
+    path: /docs
