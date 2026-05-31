@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Source Health</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; color: #1a1a1a; }
+    h1 { margin-bottom: 0.25rem; }
+    .metrics { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0 2rem; }
+    .metric { border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; min-width: 90px; }
+    .metric .value { font-size: 1.5rem; font-weight: 700; }
+    .metric .label { font-size: 0.8rem; color: #666; text-transform: uppercase; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; font-size: 0.9rem; }
+    th { background: #fafafa; }
+    .badge { display: inline-block; width: 0.8rem; height: 0.8rem; border-radius: 50%; vertical-align: middle; }
+    .badge.green { background: #2ca02c; }
+    .badge.yellow { background: #e0b000; }
+    .badge.red { background: #d62728; }
+    .badge.gray { background: #999; }
+    .stale { color: #d62728; font-weight: 600; }
+    .err { color: #a33; font-family: monospace; font-size: 0.8rem; }
+    .muted { color: #999; }
+  </style>
+</head>
+<body>
+  <h1>Source Health</h1>
+  <p class="muted">Traffic-light status per source. Broken sources are listed first.</p>
+
+  <div class="metrics">
+    <div class="metric"><div class="value">{{ metrics.total_sources }}</div><div class="label">Sources</div></div>
+    <div class="metric"><div class="value">{{ metrics.healthy }}</div><div class="label">Healthy</div></div>
+    <div class="metric"><div class="value">{{ metrics.degraded }}</div><div class="label">Degraded</div></div>
+    <div class="metric"><div class="value">{{ metrics.broken }}</div><div class="label">Broken</div></div>
+    <div class="metric"><div class="value">{{ metrics.stale }}</div><div class="label">Stale</div></div>
+    <div class="metric"><div class="value">{{ "%.0f%%"|format(metrics.pct_healthy * 100) }}</div><div class="label">% Healthy</div></div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Source</th>
+        <th>Consecutive failures</th>
+        <th>Success rate</th>
+        <th>Avg items</th>
+        <th>Last fetch</th>
+        <th>Last error</th>
+        <th>Stale</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sources %}
+      <tr>
+        <td><span class="badge {{ s.color }}" title="{{ s.status }}"></span> {{ s.status }}</td>
+        <td>{{ s.name }}</td>
+        <td>{{ s.consecutive_failures }}</td>
+        <td>{{ "%.0f%%"|format(s.success_rate * 100) }}</td>
+        <td>{{ "%.1f"|format(s.avg_items) }}</td>
+        <td>{{ s.last_fetch_time or "—" }}</td>
+        <td class="err">{{ (s.last_error[:80] if s.last_error else "") or "" }}</td>
+        <td>{% if s.stale %}<span class="stale">stale</span>{% else %}—{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="muted">No sources recorded yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>
