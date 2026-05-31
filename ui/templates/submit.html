@@ -49,18 +49,26 @@
     var timer = null;
     function checkDupes() {
       var title = titleEl.value.trim();
-      if (title.length < 3) { dupesEl.innerHTML = ""; return; }
+      if (title.length < 3) { dupesEl.replaceChildren(); return; }
       var q = "/api/submissions/duplicates?title=" + encodeURIComponent(title);
       if (urlEl.value.trim()) q += "&url=" + encodeURIComponent(urlEl.value.trim());
       fetch(q).then(function (r) { return r.json(); }).then(function (rows) {
-        if (!rows.length) { dupesEl.innerHTML = ""; return; }
-        var html = "<strong>Possible duplicates:</strong>";
+        dupesEl.replaceChildren();
+        if (!rows.length) { return; }
+        var heading = document.createElement("strong");
+        heading.textContent = "Possible duplicates:";
+        dupesEl.appendChild(heading);
         rows.forEach(function (d) {
-          html += '<div class="dupe">' + (d.similarity * 100).toFixed(0) +
-            '% (' + d.reason + ') &mdash; <a href="' + d.url + '">' +
-            d.title + '</a></div>';
+          var box = document.createElement("div");
+          box.className = "dupe";
+          box.appendChild(document.createTextNode(
+            (d.similarity * 100).toFixed(0) + "% (" + d.reason + ") — "));
+          var link = document.createElement("a");
+          link.href = d.url;
+          link.textContent = d.title;
+          box.appendChild(link);
+          dupesEl.appendChild(box);
         });
-        dupesEl.innerHTML = html;
       });
     }
     function debounced() { clearTimeout(timer); timer = setTimeout(checkDupes, 300); }
@@ -86,7 +94,7 @@
           msgEl.style.color = "#2ca02c";
           msgEl.textContent = "Submitted! Pending moderation (category: " + res.body.category + ").";
           document.getElementById("submit-form").reset();
-          dupesEl.innerHTML = "";
+          dupesEl.replaceChildren();
         } else {
           msgEl.style.color = "#d62728";
           msgEl.textContent = res.body.detail || "Submission failed.";

@@ -22,6 +22,8 @@ from src.submissions import (
 
 NOW = dt.datetime(2024, 6, 1, tzinfo=dt.timezone.utc)
 
+ADMIN_HEADERS = {"X-Admin-Token": api.ADMIN_TOKEN}
+
 
 @pytest.fixture()
 def engine():
@@ -116,6 +118,39 @@ def test_find_duplicates_none_for_distinct(session):
 
 def test_find_duplicates_empty_db(session):
     assert find_duplicates(session, "Anything", "https://x.com/y") == []
+
+
+def test_find_duplicates_flags_pending_submission_by_url(session):
+    first = create_submission(
+        session, "First submitter", url="https://example.com/race", user_id="alice"
+    )
+    dupes = find_duplicates(session, "Second submitter", "https://example.com/race/")
+    assert len(dupes) == 1
+    assert dupes[0]["submission_id"] == first.id
+    assert dupes[0]["story_id"] is None
+    assert dupes[0]["reason"] == "url"
+
+
+def test_find_duplicates_ignores_decided_submission(session):
+    sub = create_submission(
+        session, "Decided submitter", url="https://example.com/done", user_id="bob"
+    )
+    reject_submission(session, sub.id)
+    # A rejected submission no longer occupies the URL, so a new submit is clear.
+    assert find_duplicates(session, "New attempt", "https://example.com/done") == []
+
+
+def test_create_submission_rejects_pending_duplicate(session):
+    create_submission(
+        session, "Concurrent post", url="https://example.com/concurrent", user_id="a"
+    )
+    with pytest.raises(SubmissionError, match="duplicate"):
+        create_submission(
+            session,
+            "Concurrent post copy",
+            url="https://example.com/concurrent",
+            user_id="b",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +339,9 @@ def test_api_list_and_approve_flow(client):
     listing = client.get("/api/submissions")
     assert sub_id in [s["id"] for s in listing.json()]
 
-    approve = client.post(f"/api/submissions/{sub_id}/approve")
+    approve = client.post(
+        f"/api/submissions/{sub_id}/approve", headers=ADMIN_HEADERS
+    )
     assert approve.status_code == 200
     assert approve.json()["status"] == "approved"
 
@@ -315,13 +352,39 @@ def test_api_list_and_approve_flow(client):
 def test_api_reject(client):
     create = client.post("/api/submissions", json={"title": "Reject this AI post"})
     sub_id = create.json()["id"]
-    resp = client.post(f"/api/submissions/{sub_id}/reject")
+    resp = client.post(f"/api/submissions/{sub_id}/reject", headers=ADMIN_HEADERS)
     assert resp.status_code == 200
     assert resp.json()["status"] == "rejected"
 
 
 def test_api_approve_unknown_returns_404(client):
-    assert client.post("/api/submissions/12345/approve").status_code == 404
+    assert (
+        client.post(
+            "/api/submissions/12345/approve", headers=ADMIN_HEADERS
+        ).status_code
+        == 404
+    )
+
+
+def test_api_approve_requires_admin_token(client):
+    create = client.post("/api/submissions", json={"title": "Needs moderation AI"})
+    sub_id = create.json()["id"]
+    assert client.post(f"/api/submissions/{sub_id}/approve").status_code == 403
+    assert (
+        client.post(
+            f"/api/submissions/{sub_id}/approve",
+            headers={"X-Admin-Token": "wrong-token"},
+        ).status_code
+        == 403
+    )
+    listing = client.get("/api/submissions")
+    assert sub_id in [s["id"] for s in listing.json()]
+
+
+def test_api_reject_requires_admin_token(client):
+    create = client.post("/api/submissions", json={"title": "Spam AI post"})
+    sub_id = create.json()["id"]
+    assert client.post(f"/api/submissions/{sub_id}/reject").status_code == 403
 
 
 def test_api_duplicates_preview(client, api_engine):

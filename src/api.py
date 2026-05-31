@@ -4,10 +4,11 @@ Run with ``uvicorn src.api:app``. The static site (``docs/``) calls
 ``/api/search`` for its live search box.
 """
 
+import os
 import uuid
 from pathlib import Path
 
-from fastapi import Body, Cookie, FastAPI, HTTPException, Query, Request
+from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
@@ -318,19 +319,22 @@ def _submission_status(exc: SubmissionError) -> int:
     return 404 if exc.not_found else 400
 
 
+# Shared moderation secret. Approve/reject are privileged actions, so they are
+# gated behind a token (X-Admin-Token header) rather than the open cookie
+# identity the rest of the app uses for voting/commenting.
+ADMIN_TOKEN = os.environ.get("SUBMISSIONS_ADMIN_TOKEN", "swarm-admin")
+
+
+def _require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+    if x_admin_token != ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="admin token required")
+
+
 @app.post("/api/submissions")
 def api_create_submission(
     payload: dict = Body(...),
     voter_id: str | None = Cookie(default=None),
 ) -> JSONResponse:
-    """Create a pending user submission and return it.
-
-    Accepts ``title`` (required), optional ``url`` (omit for a self-post),
-    ``description``, and ``category`` in the JSON body. The submitter id defaults
-    to the ``voter_id`` cookie (a fresh uuid is minted and set when absent).
-    Responds 400 for an empty title or when the candidate duplicates an existing
-    story; 201 with the created submission otherwise.
-    """
     title = payload.get("title")
     if title is None:
         raise HTTPException(status_code=400, detail="title required")
@@ -373,7 +377,6 @@ def api_create_submission(
 def api_list_submissions(
     limit: int = Query(50, ge=1, le=200, description="max pending rows"),
 ) -> list[dict]:
-    """Return the pending moderation queue (oldest first)."""
     session = _session()
     try:
         return list_pending(session, limit)
@@ -388,7 +391,6 @@ def api_submission_duplicates(
     title: str = Query(..., description="candidate title"),
     url: str | None = Query(None, description="candidate url"),
 ) -> list[dict]:
-    """Return existing stories that would duplicate a candidate (live preview)."""
     session = _session()
     try:
         return find_duplicates(session, title, url)
@@ -397,8 +399,9 @@ def api_submission_duplicates(
 
 
 @app.post("/api/submissions/{submission_id}/approve")
-def api_approve_submission(submission_id: int) -> dict:
-    """Approve a submission, promoting it to a story; 404 if unknown."""
+def api_approve_submission(
+    submission_id: int, _: None = Depends(_require_admin)
+) -> dict:
     session = _session()
     try:
         story = approve_submission(session, submission_id)
@@ -410,8 +413,9 @@ def api_approve_submission(submission_id: int) -> dict:
 
 
 @app.post("/api/submissions/{submission_id}/reject")
-def api_reject_submission(submission_id: int) -> dict:
-    """Reject a pending submission; 404 if unknown."""
+def api_reject_submission(
+    submission_id: int, _: None = Depends(_require_admin)
+) -> dict:
     session = _session()
     try:
         submission = reject_submission(session, submission_id)
