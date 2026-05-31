@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, UniqueConstraint
+from sqlalchemy import ForeignKey, Index, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -68,6 +68,9 @@ class Story(Base):
     source_name: Mapped[str]
     topic: Mapped[str]  # "ai" | "aerospace" | "both"
     raw_score: Mapped[int] = mapped_column(default=0)
+    # Denormalised count of non-deleted comments, kept in sync by the comments
+    # service so listings can show "N comments" without a per-render COUNT.
+    comment_count: Mapped[int] = mapped_column(default=0)
     # vote_count is the denormalised net points (sum of vote_values); downvotes
     # counts only the -1 votes, kept for the distribution display.
     vote_count: Mapped[int] = mapped_column(default=0)
@@ -94,6 +97,7 @@ class Story(Base):
     source_id: Mapped[int | None] = mapped_column(ForeignKey("sources.id"), default=None)
     source: Mapped["Source | None"] = relationship(back_populates="stories")
     votes: Mapped[list["Vote"]] = relationship(back_populates="story")
+    comments: Mapped[list["Comment"]] = relationship(back_populates="story")
 
 
 class Vote(Base):
@@ -118,3 +122,41 @@ class Vote(Base):
     ip_hash: Mapped[str | None] = mapped_column(default=None)
 
     story: Mapped["Story"] = relationship(back_populates="votes")
+
+
+class Comment(Base):
+    """A user comment on a story, optionally threaded under a parent comment.
+
+    Top-level comments have ``parent_comment_id`` NULL; replies point at the
+    comment they answer, so an arbitrarily deep discussion tree is stored as a
+    flat adjacency list. ``deleted`` is a soft-delete flag: a removed comment
+    keeps its row (so its replies stay reachable) but renders as a ``[deleted]``
+    stub. ``vote_count`` ranks comments independently of the parent story's votes.
+    """
+
+    __tablename__ = "comments"
+    # Threads are loaded "all comments for one story, oldest first"; this index
+    # makes that scan cheap and keeps a stable tie-break order.
+    __table_args__ = (Index("ix_comments_story_created", "story_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    story_id: Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    # NULL for a top-level comment; otherwise the comment this one replies to.
+    parent_comment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("comments.id"), default=None, index=True
+    )
+    # Anonymous author id (e.g. a cookie uuid) or username; None for anonymous.
+    user_id: Mapped[str | None] = mapped_column(default=None)
+    body: Mapped[str] = mapped_column(Text)
+    vote_count: Mapped[int] = mapped_column(default=0)
+    # Soft delete: the row survives so child replies keep their parent, but the
+    # body is suppressed behind a "[deleted]" stub on read.
+    deleted: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    story: Mapped["Story"] = relationship(back_populates="comments")
+    parent: Mapped["Comment | None"] = relationship(
+        back_populates="replies", remote_side=[id]
+    )
+    replies: Mapped[list["Comment"]] = relationship(back_populates="parent")

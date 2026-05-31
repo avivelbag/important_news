@@ -104,6 +104,8 @@ def render_story(story: Story, index: int) -> str:
     else:
         sources_html = escape(sources[0])
     story_attr = escape(str(story.id), quote=True) if story.id is not None else ""
+    comment_count = story.comment_count or 0
+    comments_label = "1 comment" if comment_count == 1 else f"{comment_count} comments"
     return (
         f'    <li class="story" data-story-id="{story_attr}">\n'
         f'      <span class="rank">{index}.</span>\n'
@@ -119,7 +121,10 @@ def render_story(story: Story, index: int) -> str:
         '        <span class="meta">'
         f'<span class="points">{points} points</span>{downvotes_html} '
         f"&middot; {sources_html} "
-        f"&middot; {escape(_format_timestamp(story.published_at))}</span>\n"
+        f"&middot; {escape(_format_timestamp(story.published_at))} "
+        '&middot; <button type="button" class="comments-toggle">'
+        f'<span class="comment-count">{comments_label}</span></button></span>\n'
+        '        <div class="comments" hidden></div>\n'
         "      </span>\n"
         "    </li>"
     )
@@ -182,6 +187,7 @@ def render_html(grouped: dict[str, list[Story]]) -> str:
         '  <script src="filter.js"></script>\n'
         '  <script src="search.js"></script>\n'
         '  <script src="vote.js"></script>\n'
+        '  <script src="comments.js"></script>\n'
         "</body>\n"
         "</html>\n"
     )
@@ -271,6 +277,23 @@ def render_css() -> str:
         "a.title:hover { text-decoration: underline; }\n"
         ".domain { color: var(--muted); font-size: 0.8rem; }\n"
         ".meta { color: var(--muted); font-size: 0.78rem; }\n"
+        "button.comments-toggle {\n"
+        "  border: none;\n"
+        "  background: transparent;\n"
+        "  color: var(--muted);\n"
+        "  font: inherit;\n"
+        "  font-size: inherit;\n"
+        "  padding: 0;\n"
+        "  cursor: pointer;\n"
+        "  text-decoration: underline;\n"
+        "}\n"
+        ".comments { margin-top: 0.4rem; }\n"
+        ".comment { margin: 0.3rem 0; }\n"
+        ".comment-replies { margin-left: 1rem; border-left: 1px solid #ddd; padding-left: 0.6rem; }\n"
+        ".comment-meta { color: var(--muted); font-size: 0.72rem; }\n"
+        ".comment-body { font-size: 0.82rem; white-space: pre-wrap; }\n"
+        ".comment-form textarea { width: 100%; max-width: 480px; font: inherit; }\n"
+        ".comments-empty { color: var(--muted); font-style: italic; }\n"
         ".empty { color: var(--muted); font-style: italic; }\n"
         "footer {\n"
         "  max-width: 760px;\n"
@@ -513,6 +536,99 @@ def render_vote_js() -> str:
     )
 
 
+def render_comments_js() -> str:
+    # Lazily loads each story's thread from /api/articles/{id}/comments when its
+    # "N comments" button is first toggled, renders the nested tree (indenting
+    # replies and stubbing [deleted] nodes), and posts new comments / replies /
+    # votes back through the comments API. Cookies carry the author id.
+    return (
+        "(function () {\n"
+        "  function esc(s) {\n"
+        '    var d = document.createElement("div");\n'
+        '    d.textContent = s == null ? "" : String(s);\n'
+        "    return d.innerHTML;\n"
+        "  }\n"
+        "\n"
+        "  function renderNode(c) {\n"
+        '    var author = c.deleted ? "[deleted]" : (c.user_id || "anonymous");\n'
+        '    var children = "";\n'
+        "    if (c.replies && c.replies.length) {\n"
+        "      for (var i = 0; i < c.replies.length; i++) {\n"
+        "        children += renderNode(c.replies[i]);\n"
+        "      }\n"
+        "    }\n"
+        '    return \'<div class="comment" data-comment-id="\' + esc(c.id) + \'">\' +\n'
+        '      \'<div class="comment-meta">\' + esc(author) +\n'
+        '      \' &middot; <span class="comment-votes">\' + esc(c.vote_count) +\n'
+        "      ' points</span> &middot; ' + esc(c.created_at || '') + '</div>' +\n"
+        '      \'<div class="comment-body">\' + esc(c.body) + \'</div>\' +\n'
+        '      \'<div class="comment-replies">\' + children + \'</div></div>\';\n'
+        "  }\n"
+        "\n"
+        "  function load(story, panel) {\n"
+        '    var id = story.getAttribute("data-story-id");\n'
+        '    fetch("/api/articles/" + encodeURIComponent(id) + "/comments")\n'
+        "      .then(function (r) { return r.ok ? r.json() : []; })\n"
+        "      .then(function (thread) {\n"
+        '        var html = "";\n'
+        "        for (var i = 0; i < thread.length; i++) {\n"
+        "          html += renderNode(thread[i]);\n"
+        "        }\n"
+        "        if (!html) html = '<p class=\"comments-empty\">No comments yet.</p>';\n"
+        "        html += '<form class=\"comment-form\">' +\n"
+        "          '<textarea name=\"body\" placeholder=\"Add a comment\"></textarea>' +\n"
+        "          '<button type=\"submit\">Post</button></form>';\n"
+        "        panel.innerHTML = html;\n"
+        "      })\n"
+        "      .catch(function () {});\n"
+        "  }\n"
+        "\n"
+        "  function submit(story, panel, form) {\n"
+        '    var ta = form.querySelector("textarea");\n'
+        "    var body = ta ? ta.value.trim() : '';\n"
+        "    if (!body) return;\n"
+        '    var id = story.getAttribute("data-story-id");\n'
+        '    fetch("/api/comments", {\n'
+        '      method: "POST",\n'
+        '      headers: { "Content-Type": "application/json" },\n'
+        '      credentials: "same-origin",\n'
+        "      body: JSON.stringify({ story_id: Number(id), body: body })\n"
+        "    })\n"
+        "      .then(function (r) { return r.ok ? r.json() : null; })\n"
+        "      .then(function (data) { if (data) load(story, panel); });\n"
+        "  }\n"
+        "\n"
+        "  function init() {\n"
+        '    var stories = document.querySelectorAll("li.story");\n'
+        "    for (var i = 0; i < stories.length; i++) {\n"
+        "      (function (story) {\n"
+        '        var toggle = story.querySelector(".comments-toggle");\n'
+        '        var panel = story.querySelector(".comments");\n'
+        "        if (!toggle || !panel) return;\n"
+        "        var loaded = false;\n"
+        '        toggle.addEventListener("click", function () {\n'
+        "          panel.hidden = !panel.hidden;\n"
+        "          if (!panel.hidden && !loaded) { loaded = true; load(story, panel); }\n"
+        "        });\n"
+        '        panel.addEventListener("submit", function (e) {\n'
+        '          if (e.target && e.target.classList.contains("comment-form")) {\n'
+        "            e.preventDefault();\n"
+        "            submit(story, panel, e.target);\n"
+        "          }\n"
+        "        });\n"
+        "      })(stories[i]);\n"
+        "    }\n"
+        "  }\n"
+        "\n"
+        '  if (document.readyState === "loading") {\n'
+        '    document.addEventListener("DOMContentLoaded", init);\n'
+        "  } else {\n"
+        "    init();\n"
+        "  }\n"
+        "})();\n"
+    )
+
+
 def write_feeds(out_path: Path, stories: list[Story]) -> list[Path]:
     """Write the main RSS feed plus one feed per category with stories.
 
@@ -554,6 +670,7 @@ def generate_site(
     (out_path / "filter.js").write_text(render_js(), encoding="utf-8")
     (out_path / "search.js").write_text(render_search_js(), encoding="utf-8")
     (out_path / "vote.js").write_text(render_vote_js(), encoding="utf-8")
+    (out_path / "comments.js").write_text(render_comments_js(), encoding="utf-8")
     write_feeds(out_path, stories)
     return out_path
 
