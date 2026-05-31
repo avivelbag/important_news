@@ -17,7 +17,7 @@ renders as a minimal stub from :func:`get_profile`; its activity history is
 never returned.
 """
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select, union_all
 
 from src.models import Comment, Story, UserProfile, Vote
 
@@ -201,54 +201,55 @@ def get_user_articles(
     where each item carries ``story_id``, ``title``, ``url``, ``activity``, and
     an ISO ``timestamp``. Raises :class:`ProfileError` for an unknown/private
     user or invalid pagination.
+
+    Sorting and pagination are pushed into SQL: a ``UNION ALL`` of the submitted
+    and upvoted rows (the latter via a join, not a per-vote ``Story`` fetch) is
+    ordered and sliced at the database, so a user with thousands of votes never
+    loads their whole activity history into memory.
     """
     name = (username or "").strip()
     _check_visible(session, name)
     limit, offset = _paginate(page, per_page)
 
-    submitted = session.scalars(
-        select(Story).where(Story.submitted_by == name)
-    ).all()
-    rows: list[dict] = [
-        {
-            "story_id": s.id,
-            "title": s.title,
-            "url": s.url,
-            "activity": "submitted",
-            "timestamp": s.fetched_at,
-        }
-        for s in submitted
-    ]
+    submitted_q = select(
+        Story.id.label("story_id"),
+        Story.title.label("title"),
+        Story.url.label("url"),
+        literal("submitted").label("activity"),
+        Story.fetched_at.label("timestamp"),
+    ).where(Story.submitted_by == name)
 
-    upvotes = session.scalars(
-        select(Vote).where(Vote.user_id == name, Vote.vote_value == 1)
-    ).all()
-    for v in upvotes:
-        story = session.get(Story, v.story_id)
-        if story is None:
-            continue
-        rows.append(
-            {
-                "story_id": story.id,
-                "title": story.title,
-                "url": story.url,
-                "activity": "upvoted",
-                "timestamp": v.updated_at or v.created_at,
-            }
+    upvoted_q = (
+        select(
+            Story.id.label("story_id"),
+            Story.title.label("title"),
+            Story.url.label("url"),
+            literal("upvoted").label("activity"),
+            func.coalesce(Vote.updated_at, Vote.created_at).label("timestamp"),
         )
+        .join(Story, Story.id == Vote.story_id)
+        .where(Vote.user_id == name, Vote.vote_value == 1)
+    )
 
-    rows.sort(key=lambda r: r["timestamp"], reverse=True)
-    total = len(rows)
-    window = rows[offset : offset + limit]
+    combined = union_all(submitted_q, upvoted_q).subquery()
+    total = int(
+        session.scalar(select(func.count()).select_from(combined)) or 0
+    )
+    rows = session.execute(
+        select(combined)
+        .order_by(combined.c.timestamp.desc(), combined.c.story_id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
     items = [
         {
-            "story_id": r["story_id"],
-            "title": r["title"],
-            "url": r["url"],
-            "activity": r["activity"],
-            "timestamp": r["timestamp"].isoformat() if r["timestamp"] else None,
+            "story_id": r.story_id,
+            "title": r.title,
+            "url": r.url,
+            "activity": r.activity,
+            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
         }
-        for r in window
+        for r in rows
     ]
     return {
         "username": name,
