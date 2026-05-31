@@ -1,22 +1,3 @@
-"""Data-source connectors and scraper for the stories database.
-
-This module fetches AI and aerospace content from several public sources,
-normalizes the heterogeneous payloads into the :class:`src.models.Story` schema
-and inserts them into the database while skipping URLs that already exist.
-
-Network access is fully isolated behind an injectable ``fetch`` callable so the
-parsing, normalization, categorization and deduplication logic can be tested
-deterministically without touching the network. Only :func:`_http_get` performs
-real I/O, and it is used purely as the default ``fetch`` implementation.
-
-Run locally with::
-
-    python src/scraper.py
-
-which initializes the database, scrapes every configured source and logs
-progress and errors to stderr.
-"""
-
 import dataclasses
 import datetime as dt
 import email.utils
@@ -73,17 +54,6 @@ AEROSPACE_KEYWORDS = (
 
 @dataclasses.dataclass(frozen=True)
 class SourceSpec:
-    """Static description of a public source to scrape.
-
-    Attributes:
-        name: Human-readable unique name, also used as the DB ``Source`` name.
-        url: Endpoint to fetch (an RSS/Atom feed URL or an API endpoint).
-        kind: Connector type; either ``"rss"`` or ``"hn"``.
-        category: Default topic (``"ai"`` or ``"aerospace"``) applied when an
-            item's own text is topically ambiguous.
-        limit: Maximum number of items to pull from this source per run.
-    """
-
     name: str
     url: str
     kind: str
@@ -118,12 +88,6 @@ DEFAULT_SOURCES = (
 
 @dataclasses.dataclass
 class NormalizedItem:
-    """A source-agnostic representation of a single fetched entry.
-
-    This is the intermediate shape every connector produces before it is
-    persisted as a :class:`src.models.Story`.
-    """
-
     title: str
     url: str
     category: str
@@ -132,20 +96,13 @@ class NormalizedItem:
 
 @dataclasses.dataclass
 class ScrapeResult:
-    """Aggregate counters describing the outcome of a scrape run."""
-
     inserted: int = 0
     errors: int = 0
     per_source: dict = dataclasses.field(default_factory=dict)
 
 
 def _http_get(url: str, timeout: float = 15.0) -> str:
-    """Perform a blocking HTTP GET and return the decoded body.
-
-    This is the only function that touches the network; tests inject their own
-    fetch callable instead of calling it. A descriptive User-Agent is sent
-    because several public feeds reject the default urllib agent.
-    """
+    # Several public feeds reject the default urllib agent, so send a real one.
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         charset = response.headers.get_content_charset() or "utf-8"
@@ -153,13 +110,6 @@ def _http_get(url: str, timeout: float = 15.0) -> str:
 
 
 def categorize(text: str, default: str | None = None) -> str | None:
-    """Tag free text as ``"ai"``, ``"aerospace"`` or ``"both"``.
-
-    Keyword hits are counted for each topic. If both topics match the item is
-    tagged ``"both"``; if exactly one matches that topic wins; if neither
-    matches the ``default`` is returned so a source's intrinsic topic survives
-    when the text itself is ambiguous.
-    """
     lowered = text.lower()
     ai_hits = any(kw in lowered for kw in AI_KEYWORDS)
     aero_hits = any(kw in lowered for kw in AEROSPACE_KEYWORDS)
@@ -173,7 +123,6 @@ def categorize(text: str, default: str | None = None) -> str | None:
 
 
 def _strip(text: str | None) -> str | None:
-    """Return ``text`` trimmed of surrounding whitespace, or ``None`` if empty."""
     if text is None:
         return None
     cleaned = text.strip()
@@ -181,11 +130,7 @@ def _strip(text: str | None) -> str | None:
 
 
 def _parse_date(value: str | None) -> dt.datetime | None:
-    """Parse an RSS RFC-822 date string into a naive UTC ``datetime``.
-
-    Returns ``None`` for missing or unparseable values rather than raising, so
-    a single malformed entry never aborts a whole feed.
-    """
+    # Return None rather than raise so one malformed entry never aborts a feed.
     if not value:
         return None
     try:
@@ -200,12 +145,6 @@ def _parse_date(value: str | None) -> dt.datetime | None:
 
 
 def parse_rss(xml_text: str, default_category: str | None = None) -> list:
-    """Parse an RSS/Atom XML document into a list of :class:`NormalizedItem`.
-
-    Supports both RSS ``<item>`` and Atom ``<entry>`` elements. Entries lacking
-    a title or link are skipped. Malformed XML raises ``ET.ParseError`` to the
-    caller, which records it as a per-source error.
-    """
     root = ET.fromstring(xml_text)
     items: list = []
 
@@ -243,20 +182,12 @@ def parse_rss(xml_text: str, default_category: str | None = None) -> list:
 
 
 def fetch_rss(spec: SourceSpec, fetch: FetchFn) -> list:
-    """Fetch and parse an RSS/Atom source, truncated to ``spec.limit`` items."""
     body = fetch(spec.url)
     items = parse_rss(body, default_category=spec.category)
     return items[: spec.limit]
 
 
 def fetch_hackernews(spec: SourceSpec, fetch: FetchFn) -> list:
-    """Fetch top Hacker News stories via the public Firebase API.
-
-    The story-id list is fetched once, then each item is fetched individually up
-    to ``spec.limit``. Items without a URL (Ask HN / text posts) or that fail to
-    parse are skipped so the run continues. Categorization is applied to the
-    title, defaulting to the source category.
-    """
     id_payload = fetch(spec.url)
     ids = json.loads(id_payload)
     if not isinstance(ids, list):
@@ -299,11 +230,6 @@ CONNECTORS = {
 
 
 def ensure_source(session, spec: SourceSpec) -> models.Source:
-    """Return the existing :class:`Source` row for ``spec`` or create it.
-
-    Sources are keyed by their unique ``name`` so repeated runs reuse the same
-    row instead of violating the unique constraint.
-    """
     existing = session.query(models.Source).filter_by(name=spec.name).one_or_none()
     if existing is not None:
         return existing
@@ -314,15 +240,7 @@ def ensure_source(session, spec: SourceSpec) -> models.Source:
 
 
 def insert_items(session, source, items, now: dt.datetime) -> tuple:
-    """Insert normalized items for ``source``, skipping duplicate URLs.
-
-    Deduplication checks both the URLs already stored in the database and the
-    URLs seen earlier within this same batch, so a feed that repeats a link does
-    not create duplicates. ``now`` is used for ``fetched_at`` (and as the
-    ``published_at`` fallback when the source omitted a date), keeping inserts
-    deterministic when the caller supplies a fixed timestamp. Returns
-    ``(inserted, skipped)`` counts.
-    """
+    # Dedupe against both stored URLs and URLs seen earlier in this same batch.
     existing_urls = {row[0] for row in session.query(models.Story.url).all()}
     inserted = 0
     skipped = 0
@@ -350,11 +268,6 @@ def insert_items(session, source, items, now: dt.datetime) -> tuple:
 def scrape_source(
     engine, spec: SourceSpec, fetch: FetchFn, now: dt.datetime | None = None
 ) -> int:
-    """Scrape a single source and persist new stories in one transaction.
-
-    Returns the number of newly inserted stories. Exceptions from the connector
-    propagate to the caller, which records them as per-source errors.
-    """
     connector = CONNECTORS.get(spec.kind)
     if connector is None:
         raise ValueError(f"unknown source kind: {spec.kind!r}")
@@ -384,12 +297,6 @@ def run_scraper(
     fetch: FetchFn = _http_get,
     now: dt.datetime | None = None,
 ) -> ScrapeResult:
-    """Scrape every source and return aggregate counters.
-
-    Each source is processed independently: a failure in one source is logged
-    and counted but does not prevent the others from running, keeping the run
-    idempotent and resilient.
-    """
     if now is None:
         now = dt.datetime.now(dt.timezone.utc)
     result = ScrapeResult()
@@ -407,7 +314,6 @@ def run_scraper(
 
 
 def main(argv=None) -> int:
-    """CLI entry point: initialize the DB, scrape all sources, log a summary."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

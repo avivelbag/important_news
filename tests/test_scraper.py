@@ -1,10 +1,3 @@
-"""Tests for the data-source connectors and scraper pipeline.
-
-All network access is replaced with in-memory fetch stubs so the suite is
-deterministic and never touches the network or the real filesystem (the DB is
-an in-memory SQLite engine and timestamps are injected).
-"""
-
 import datetime as dt
 import json
 import xml.etree.ElementTree as ET
@@ -55,8 +48,6 @@ def _engine():
 
 
 def _make_fetcher(mapping):
-    """Return a fetch stub backed by a ``{url: body}`` mapping."""
-
     def fetch(url):
         return mapping[url]
 
