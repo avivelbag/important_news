@@ -44,12 +44,31 @@
   {% endif %}
 
   <script>
+    function adminToken() {
+      var token = sessionStorage.getItem("adminToken");
+      if (!token) {
+        token = window.prompt("Admin token:");
+        if (token) sessionStorage.setItem("adminToken", token);
+      }
+      return token;
+    }
+
     function decide(id, action) {
-      fetch("/api/submissions/" + id + "/" + action, { method: "POST" })
+      var token = adminToken();
+      if (!token) return;
+      fetch("/api/submissions/" + id + "/" + action, {
+        method: "POST",
+        headers: { "X-Admin-Token": token },
+      })
         .then(function (r) {
           if (r.ok) {
             var row = document.getElementById("row-" + id);
             if (row) row.remove();
+          } else {
+            // A stale/wrong token must not stay cached, or every later click
+            // silently re-fails with the same bad value.
+            if (r.status === 403) sessionStorage.removeItem("adminToken");
+            window.alert("Action failed (" + r.status + ").");
           }
         });
     }

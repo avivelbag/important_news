@@ -101,6 +101,17 @@ def test_find_duplicates_by_url(session):
     assert dupes[0]["similarity"] == 1.0
 
 
+def test_find_duplicates_exact_url_short_circuits_title_scan(session):
+    # An exact normalised-URL hit is a definite duplicate and is returned alone,
+    # without also reporting unrelated stories from the fuzzy-title pass.
+    _seed_story(session, title="Unrelated headline one", url="https://example.com/hit")
+    _seed_story(session, title="Unrelated headline two", url="https://example.com/other")
+    dupes = find_duplicates(session, "Brand new title", "https://www.example.com/hit/")
+    assert len(dupes) == 1
+    assert dupes[0]["reason"] == "url"
+    assert dupes[0]["url"] == "https://example.com/hit"
+
+
 def test_find_duplicates_by_title(session):
     _seed_story(session, title="OpenAI releases a new model today")
     dupes = find_duplicates(

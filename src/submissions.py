@@ -109,6 +109,28 @@ def find_duplicates(
     candidate_url = deduplicator.normalize_url(url) if url else ""
     matches: list[dict] = []
 
+    # Fast path: an exact normalised-URL hit uses Story's UNIQUE(url) index, so
+    # the common "same link resubmitted" case is answered without loading the
+    # whole table. A URL match is a definite duplicate, so we return it straight
+    # away and never fall through to the full fuzzy-title scan below (that scan
+    # is unavoidable only when no URL matches, because SequenceMatcher title
+    # similarity cannot be answered from an index).
+    if candidate_url:
+        url_hit = session.scalars(
+            select(Story).where(Story.url == candidate_url)
+        ).first()
+        if url_hit is not None:
+            return [
+                {
+                    "story_id": url_hit.id,
+                    "submission_id": None,
+                    "title": url_hit.title,
+                    "url": url_hit.url,
+                    "similarity": 1.0,
+                    "reason": "url",
+                }
+            ]
+
     for story in session.scalars(select(Story)).all():
         reason, similarity = _title_or_url_match(
             title, candidate_url, story.title, story.url, threshold

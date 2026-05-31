@@ -315,7 +315,6 @@ def api_set_privacy(username: str, payload: dict = Body(...)) -> dict:
 
 
 def _submission_status(exc: SubmissionError) -> int:
-    """Map a SubmissionError to 404 for unknown ids, else 400 for bad input."""
     return 404 if exc.not_found else 400
 
 
@@ -428,13 +427,11 @@ def api_reject_submission(
 
 @app.get("/submit", response_class=HTMLResponse)
 def submit_page(request: Request) -> HTMLResponse:
-    """Render the submission form."""
     return _TEMPLATES.TemplateResponse(request, "submit.html", {})
 
 
 @app.get("/moderation", response_class=HTMLResponse)
 def moderation_page(request: Request) -> HTMLResponse:
-    """Render the moderation queue of pending submissions."""
     session = _session()
     try:
         pending = list_pending(session, 200)
