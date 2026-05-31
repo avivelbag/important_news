@@ -84,6 +84,28 @@ def _format_timestamp(value: datetime) -> str:
     return value.strftime("%Y-%m-%d %H:%M")
 
 
+def _cached_block(story: Story) -> str:
+    """Render the archived-content disclosure for a story, or "" when uncached.
+
+    When ``cached_text`` is present the reader gets a "View cached version"
+    toggle holding the archived plaintext plus a "View source" link to the live
+    URL. Stories without cached content return an empty string, so older rows
+    gracefully degrade to a metadata-only card with no broken toggle shown.
+    """
+    cached_text = getattr(story, "cached_text", None)
+    if not cached_text:
+        return ""
+    body = escape(cached_text)
+    url_safe = escape(story.url, quote=True)
+    return (
+        '\n        <details class="cached">\n'
+        "          <summary>View cached version</summary>\n"
+        f'          <div class="cached-content">{body}</div>\n'
+        f'          <a class="cached-source" href="{url_safe}">View source</a>\n'
+        "        </details>"
+    )
+
+
 def render_story(story: Story, index: int) -> str:
     domain = _domain(story.url)
     domain_html = (
@@ -123,7 +145,8 @@ def render_story(story: Story, index: int) -> str:
         f"&middot; {sources_html} "
         f"&middot; {escape(_format_timestamp(story.published_at))} "
         '&middot; <button type="button" class="comments-toggle">'
-        f'<span class="comment-count">{comments_label}</span></button></span>\n'
+        f'<span class="comment-count">{comments_label}</span></button></span>'
+        f"{_cached_block(story)}\n"
         '        <div class="comments" hidden></div>\n'
         "      </span>\n"
         "    </li>"

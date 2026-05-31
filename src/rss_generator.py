@@ -97,8 +97,10 @@ def generate_rss(
         item = ET.SubElement(channel, "item")
         ET.SubElement(item, "title").text = story.title
         ET.SubElement(item, "link").text = story.url
+        # Prefer archived full text so subscribers keep readable content even
+        # when the source URL later breaks; fall back to the score summary.
         ET.SubElement(item, "description").text = (
-            f"{_points(story)} points · {story.source_name}"
+            story.cached_text or f"{_points(story)} points · {story.source_name}"
         )
         # Article URL doubles as a permalink GUID so readers dedupe on it.
         guid = ET.SubElement(item, "guid", isPermaLink="true")
