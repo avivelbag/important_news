@@ -10,6 +10,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 
 import src.db as db
+import src.deduplicator as deduplicator
 import src.models as models
 import src.scorer as scorer
 
@@ -311,6 +312,10 @@ def run_scraper(
             continue
         result.inserted += inserted
         result.per_source[spec.name] = inserted
+    # Merge near-duplicates before scoring so the canonical row carries the
+    # aggregated engagement metrics the scorer reads. Runs on every scrape and,
+    # transitively, on every refresh.
+    deduplicator.deduplicate(engine, now=now)
     scorer.recompute_scores(engine, now=now)
     return result
 

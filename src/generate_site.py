@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -27,12 +28,35 @@ _FILTERS = [("all", "All"), ("ai", "AI"), ("aerospace", "Aerospace")]
 
 
 def fetch_stories(session) -> list[Story]:
-    stmt = select(Story).order_by(
-        Story.computed_score.desc(),
-        Story.published_at.desc(),
-        Story.id.asc(),
+    # Only canonical stories are rendered; duplicates (canonical_id set) are
+    # folded into their canonical row so each story appears at most once.
+    stmt = (
+        select(Story)
+        .where(Story.canonical_id.is_(None))
+        .order_by(
+            Story.computed_score.desc(),
+            Story.published_at.desc(),
+            Story.id.asc(),
+        )
     )
     return list(session.scalars(stmt).all())
+
+
+def _merged_sources(story: Story) -> list[str]:
+    """Return the list of source names that contributed to *story*.
+
+    Reads the JSON ``merged_sources`` column when present (a merged story),
+    otherwise falls back to the story's single ``source_name``. Malformed JSON
+    degrades gracefully to the single source rather than crashing the build.
+    """
+    if story.merged_sources:
+        try:
+            sources = json.loads(story.merged_sources)
+        except (ValueError, TypeError):
+            sources = None
+        if isinstance(sources, list) and sources:
+            return [str(s) for s in sources]
+    return [story.source_name]
 
 
 def group_by_topic(stories: list[Story]) -> dict[str, list[Story]]:
@@ -66,6 +90,13 @@ def render_story(story: Story, index: int) -> str:
         f' <span class="domain">({escape(domain)})</span>' if domain else ""
     )
     points = story.vote_count or story.raw_score or 0
+    # A merged story lists every contributing source ("via HN, Reddit"); an
+    # unmerged one just shows its single source.
+    sources = _merged_sources(story)
+    if len(sources) > 1:
+        sources_html = "via " + ", ".join(escape(s) for s in sources)
+    else:
+        sources_html = escape(sources[0])
     return (
         '    <li class="story">\n'
         f'      <span class="rank">{index}.</span>\n'
@@ -73,7 +104,7 @@ def render_story(story: Story, index: int) -> str:
         f'        <a class="title" href="{escape(story.url, quote=True)}">'
         f"{escape(story.title)}</a>{domain_html}\n"
         '        <span class="meta">'
-        f"{points} points &middot; {escape(story.source_name)} "
+        f"{points} points &middot; {sources_html} "
         f"&middot; {escape(_format_timestamp(story.published_at))}</span>\n"
         "      </span>\n"
         "    </li>"

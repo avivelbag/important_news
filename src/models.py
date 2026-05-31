@@ -39,6 +39,21 @@ class Story(Base):
     published_at: Mapped[datetime]
     fetched_at: Mapped[datetime]
 
+    # When this story is a near-duplicate of another, canonical_id points at the
+    # surviving (canonical) story; NULL means this row is itself canonical and is
+    # the one the site renders. Indexed for fast "give me the dupes of X" lookups.
+    canonical_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stories.id"), default=None, index=True
+    )
+    # JSON array of distinct source names that contributed to a merged story,
+    # e.g. ["Hacker News", "Reddit"]. NULL until a merge happens.
+    merged_sources: Mapped[str | None] = mapped_column(default=None)
+
+    canonical: Mapped["Story | None"] = relationship(
+        back_populates="duplicates", remote_side=[id]
+    )
+    duplicates: Mapped[list["Story"]] = relationship(back_populates="canonical")
+
     source_id: Mapped[int | None] = mapped_column(ForeignKey("sources.id"), default=None)
     source: Mapped["Source | None"] = relationship(back_populates="stories")
     votes: Mapped[list["Vote"]] = relationship(back_populates="story")
