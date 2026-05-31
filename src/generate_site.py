@@ -90,6 +90,12 @@ def render_story(story: Story, index: int) -> str:
         f' <span class="domain">({escape(domain)})</span>' if domain else ""
     )
     points = story.vote_count or story.raw_score or 0
+    downvotes = story.downvotes or 0
+    downvotes_html = (
+        f' &middot; <span class="downvotes">{downvotes} downvotes</span>'
+        if downvotes
+        else ""
+    )
     # A merged story lists every contributing source ("via HN, Reddit"); an
     # unmerged one just shows its single source.
     sources = _merged_sources(story)
@@ -97,14 +103,22 @@ def render_story(story: Story, index: int) -> str:
         sources_html = "via " + ", ".join(escape(s) for s in sources)
     else:
         sources_html = escape(sources[0])
+    story_attr = escape(str(story.id), quote=True) if story.id is not None else ""
     return (
-        '    <li class="story">\n'
+        f'    <li class="story" data-story-id="{story_attr}">\n'
         f'      <span class="rank">{index}.</span>\n'
+        '      <span class="votes">\n'
+        '        <button type="button" class="vote up" '
+        'aria-label="Upvote">&#9650;</button>\n'
+        '        <button type="button" class="vote down" '
+        'aria-label="Downvote">&#9660;</button>\n'
+        "      </span>\n"
         '      <span class="story-main">\n'
         f'        <a class="title" href="{escape(story.url, quote=True)}">'
         f"{escape(story.title)}</a>{domain_html}\n"
         '        <span class="meta">'
-        f"{points} points &middot; {sources_html} "
+        f'<span class="points">{points} points</span>{downvotes_html} '
+        f"&middot; {sources_html} "
         f"&middot; {escape(_format_timestamp(story.published_at))}</span>\n"
         "      </span>\n"
         "    </li>"
@@ -167,6 +181,7 @@ def render_html(grouped: dict[str, list[Story]]) -> str:
         '  <footer>Generated static site &middot; AI &amp; Aerospace</footer>\n'
         '  <script src="filter.js"></script>\n'
         '  <script src="search.js"></script>\n'
+        '  <script src="vote.js"></script>\n'
         "</body>\n"
         "</html>\n"
     )
@@ -238,6 +253,19 @@ def render_css() -> str:
         "}\n"
         "li.story:hover { background: #fff; }\n"
         ".rank { color: var(--muted); min-width: 1.5rem; text-align: right; }\n"
+        ".votes { display: flex; flex-direction: column; gap: 0.1rem; }\n"
+        "button.vote {\n"
+        "  border: none;\n"
+        "  background: transparent;\n"
+        "  color: var(--muted);\n"
+        "  font: inherit;\n"
+        "  font-size: 0.7rem;\n"
+        "  line-height: 1;\n"
+        "  padding: 0;\n"
+        "  cursor: pointer;\n"
+        "}\n"
+        "button.vote:hover { color: var(--accent); }\n"
+        "button.vote.voted { color: var(--accent); font-weight: bold; }\n"
         ".story-main { display: flex; flex-direction: column; }\n"
         "a.title { color: #222; text-decoration: none; font-size: 0.95rem; }\n"
         "a.title:hover { text-decoration: underline; }\n"
@@ -399,6 +427,92 @@ def render_search_js() -> str:
     )
 
 
+def render_vote_js() -> str:
+    # Wires the up/down buttons to POST /api/vote, updates the shown points from
+    # the returned distribution, and remembers the user's choice per story in
+    # localStorage so the indicator survives a reload. Cookies carry the voter
+    # id; fetch sends them with credentials: "same-origin".
+    return (
+        "(function () {\n"
+        '  var STORAGE_KEY = "voted-stories";\n'
+        "\n"
+        "  function readVotes() {\n"
+        "    try {\n"
+        '      return JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "{}");\n'
+        "    } catch (e) {\n"
+        "      return {};\n"
+        "    }\n"
+        "  }\n"
+        "\n"
+        "  function writeVotes(state) {\n"
+        "    try {\n"
+        "      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));\n"
+        "    } catch (e) {}\n"
+        "  }\n"
+        "\n"
+        "  function mark(li, value) {\n"
+        '    var up = li.querySelector("button.vote.up");\n'
+        '    var down = li.querySelector("button.vote.down");\n'
+        '    if (up) up.classList.toggle("voted", value === 1);\n'
+        '    if (down) down.classList.toggle("voted", value === -1);\n'
+        "  }\n"
+        "\n"
+        "  function send(li, value) {\n"
+        '    var id = li.getAttribute("data-story-id");\n'
+        "    if (!id) return;\n"
+        '    fetch("/api/vote", {\n'
+        '      method: "POST",\n'
+        '      headers: { "Content-Type": "application/json" },\n'
+        '      credentials: "same-origin",\n'
+        '      body: JSON.stringify({ story_id: Number(id), vote_value: value })\n'
+        "    })\n"
+        "      .then(function (resp) { return resp.ok ? resp.json() : null; })\n"
+        "      .then(function (data) {\n"
+        "        if (!data) return;\n"
+        '        var points = li.querySelector(".points");\n'
+        '        if (points) points.textContent = data.points + " points";\n'
+        '        var down = li.querySelector(".downvotes");\n'
+        '        if (down) down.textContent = data.downvotes + " downvotes";\n'
+        "        var state = readVotes();\n"
+        "        if (value === 0) { delete state[id]; } else { state[id] = value; }\n"
+        "        writeVotes(state);\n"
+        "        mark(li, value);\n"
+        "      })\n"
+        "      .catch(function () {});\n"
+        "  }\n"
+        "\n"
+        "  function click(button) {\n"
+        '    var li = button.closest("li.story");\n'
+        "    if (!li) return;\n"
+        '    var id = li.getAttribute("data-story-id");\n'
+        "    var current = readVotes()[id] || 0;\n"
+        '    var value = button.classList.contains("up") ? 1 : -1;\n'
+        "    if (current === value) value = 0;\n"
+        "    send(li, value);\n"
+        "  }\n"
+        "\n"
+        "  function init() {\n"
+        '    var state = readVotes();\n'
+        '    var items = document.querySelectorAll("li.story");\n'
+        "    for (var i = 0; i < items.length; i++) {\n"
+        '      var id = items[i].getAttribute("data-story-id");\n'
+        "      if (id && state[id]) mark(items[i], state[id]);\n"
+        "    }\n"
+        '    var buttons = document.querySelectorAll("button.vote");\n'
+        "    for (var j = 0; j < buttons.length; j++) {\n"
+        '      buttons[j].addEventListener("click", function () { click(this); });\n'
+        "    }\n"
+        "  }\n"
+        "\n"
+        '  if (document.readyState === "loading") {\n'
+        '    document.addEventListener("DOMContentLoaded", init);\n'
+        "  } else {\n"
+        "    init();\n"
+        "  }\n"
+        "})();\n"
+    )
+
+
 def write_feeds(out_path: Path, stories: list[Story]) -> list[Path]:
     """Write the main RSS feed plus one feed per category with stories.
 
@@ -439,6 +553,7 @@ def generate_site(
     (out_path / "style.css").write_text(render_css(), encoding="utf-8")
     (out_path / "filter.js").write_text(render_js(), encoding="utf-8")
     (out_path / "search.js").write_text(render_search_js(), encoding="utf-8")
+    (out_path / "vote.js").write_text(render_vote_js(), encoding="utf-8")
     write_feeds(out_path, stories)
     return out_path
 

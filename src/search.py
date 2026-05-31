@@ -108,9 +108,10 @@ def search_stories(
     """Search stored stories for *query*, optionally filtered by *category*.
 
     Returns a list of result dicts ``{id, title, description, url, source,
-    date, score}`` ordered by score descending then publication date
-    descending (most recent first when relevance is tied). Raises
-    :class:`SearchError` if the query is invalid.
+    date, score}`` ordered by score descending, then publication date
+    descending (most recent first when relevance is tied), then ``vote_count``
+    descending as a final tiebreaker. Raises :class:`SearchError` if the query
+    is invalid.
 
     Matching is a case-insensitive substring test on each whitespace-separated
     term; only stories with a non-zero score are returned.
@@ -127,7 +128,16 @@ def search_stories(
         if score > 0:
             scored.append((score, story))
 
-    scored.sort(key=lambda pair: (pair[0], _published_key(pair[1])), reverse=True)
+    # Order by relevance, then recency, then vote_count so votes only break
+    # ties left by the primary keys (existing score/recency orderings unchanged).
+    scored.sort(
+        key=lambda pair: (
+            pair[0],
+            _published_key(pair[1]),
+            pair[1].vote_count,
+        ),
+        reverse=True,
+    )
     results = [_serialize(story, score) for score, story in scored]
     if limit is not None and limit >= 0:
         results = results[:limit]
