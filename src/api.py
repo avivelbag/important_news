@@ -11,6 +11,13 @@ from fastapi import Body, Cookie, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
+from src.bookmarks import (
+    BookmarkError,
+    bulk_remove_bookmarks,
+    list_bookmarks,
+    remove_bookmark,
+    toggle_bookmark,
+)
 from src.comments import (
     CommentError,
     delete_comment,
@@ -116,6 +123,121 @@ def api_article_votes(article_id: int) -> dict:
         return get_distribution(session, article_id)
     except VoteError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+def _bookmark_status(exc: BookmarkError) -> int:
+    """Map a BookmarkError to 404 for unknown story/bookmark, else 400."""
+    return 404 if exc.not_found else 400
+
+
+@app.post("/api/articles/{article_id}/bookmark")
+def api_toggle_bookmark(
+    article_id: int,
+    voter_id: str | None = Cookie(default=None),
+) -> JSONResponse:
+    """Toggle the caller's bookmark on *article_id* and return its new state.
+
+    Reads the anonymous user id from the ``voter_id`` cookie, minting a fresh
+    uuid (set on the response) when absent. Responds 404 when the story does not
+    exist. The body carries ``{story_id, bookmarked, bookmark_count}``.
+    """
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+
+    session = _session()
+    try:
+        result = toggle_bookmark(session, article_id, voter_id)
+    except BookmarkError as exc:
+        raise HTTPException(
+            status_code=_bookmark_status(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+    response = JSONResponse(result)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.delete("/api/articles/{article_id}/bookmark")
+def api_remove_bookmark(
+    article_id: int,
+    voter_id: str | None = Cookie(default=None),
+) -> dict:
+    """Explicitly remove the caller's bookmark on *article_id* (idempotent).
+
+    Responds 400 when no ``voter_id`` cookie is present (nothing to remove for an
+    unidentified caller) and 404 when the story does not exist.
+    """
+    if voter_id is None:
+        raise HTTPException(status_code=400, detail="voter_id cookie required")
+    session = _session()
+    try:
+        return remove_bookmark(session, article_id, voter_id)
+    except BookmarkError as exc:
+        raise HTTPException(
+            status_code=_bookmark_status(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/user/bookmarks")
+def api_list_bookmarks(
+    voter_id: str | None = Cookie(default=None),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+    category: str | None = Query(None, description="optional topic filter"),
+) -> dict:
+    """Return the caller's private, paginated bookmark list (newest first).
+
+    The list is scoped to the ``voter_id`` cookie, so a caller only ever sees
+    their own saves. Without the cookie the caller has saved nothing, so an empty
+    page is returned rather than an error. Supports a ``category`` topic filter.
+    """
+    if voter_id is None:
+        return {
+            "user_id": None,
+            "page": page,
+            "per_page": per_page,
+            "total": 0,
+            "items": [],
+        }
+    session = _session()
+    try:
+        return list_bookmarks(session, voter_id, page, per_page, category)
+    except BookmarkError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/user/bookmarks/bulk-delete")
+def api_bulk_delete_bookmarks(
+    payload: dict = Body(...),
+    voter_id: str | None = Cookie(default=None),
+) -> dict:
+    """Bulk-remove the caller's bookmarks for the ``story_ids`` in the body.
+
+    Responds 400 when no ``voter_id`` cookie is present or ``story_ids`` is not a
+    list. Ids the caller has not bookmarked are skipped. Returns ``{removed}``.
+    """
+    if voter_id is None:
+        raise HTTPException(status_code=400, detail="voter_id cookie required")
+    story_ids = payload.get("story_ids")
+    if not isinstance(story_ids, list):
+        raise HTTPException(status_code=400, detail="story_ids (list) required")
+    session = _session()
+    try:
+        return bulk_remove_bookmarks(session, [int(s) for s in story_ids], voter_id)
+    except BookmarkError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         session.close()
 

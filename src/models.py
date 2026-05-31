@@ -75,6 +75,9 @@ class Story(Base):
     # counts only the -1 votes, kept for the distribution display.
     vote_count: Mapped[int] = mapped_column(default=0)
     downvotes: Mapped[int] = mapped_column(default=0)
+    # Denormalised count of Bookmark rows pointing at this story, kept in sync by
+    # the bookmarks service so listings can show "N saved" without a COUNT.
+    bookmark_count: Mapped[int] = mapped_column(default=0)
     computed_score: Mapped[float] = mapped_column(default=0.0)
     published_at: Mapped[datetime]
     fetched_at: Mapped[datetime]
@@ -209,6 +212,32 @@ class ExternalDiscussion(Base):
     engagement_score: Mapped[int] = mapped_column(default=0)
     discovered_at: Mapped[datetime]
     last_verified_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    story: Mapped["Story"] = relationship()
+
+
+class Bookmark(Base):
+    """A user's saved story, forming a private "read later" reading list.
+
+    Users are identified by the same free-form ``user_id`` string used on Votes
+    and Comments (a cookie uuid or chosen name). The ``(user_id, story_id)``
+    unique constraint makes toggling idempotent — a user can only bookmark a
+    given story once — and ``created_at`` records when it was saved so the
+    bookmark list can sort and display "saved on" timestamps. The denormalised
+    ``Story.bookmark_count`` is kept in sync as rows are added/removed so cards
+    can show a count without a per-render COUNT.
+    """
+
+    __tablename__ = "bookmarks"
+    __table_args__ = (
+        UniqueConstraint("user_id", "story_id"),
+        Index("ix_bookmarks_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(index=True)
+    story_id: Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    created_at: Mapped[datetime]
 
     story: Mapped["Story"] = relationship()
 
