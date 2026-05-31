@@ -173,6 +173,37 @@ class Comment(Base):
         back_populates="replies", remote_side=[id]
     )
     replies: Mapped[list["Comment"]] = relationship(back_populates="parent")
+    comment_votes: Mapped[list["CommentVote"]] = relationship(
+        back_populates="comment", cascade="all, delete-orphan"
+    )
+
+
+class CommentVote(Base):
+    """A single per-user vote (+1/-1) cast on one comment.
+
+    Unlike the legacy direct ``Comment.vote_count`` adjustment, these rows track
+    *who* voted so a user is limited to one vote per comment (the upsert target
+    for vote changes and reversals) and cannot vote twice. The owning comment's
+    ``vote_count`` is recomputed as the net sum of these rows. A reversal deletes
+    the row rather than storing a 0, so the table only ever holds active votes.
+    """
+
+    __tablename__ = "comment_votes"
+    # One vote per (user, comment). SQLite treats NULL user_ids as distinct, so
+    # this only constrains identified users; per-user voting requires a user_id.
+    __table_args__ = (UniqueConstraint("user_id", "comment_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    comment_id: Mapped[int] = mapped_column(ForeignKey("comments.id"), index=True)
+    # The voter's id (cookie uuid or username); the dedup key with comment_id.
+    user_id: Mapped[str] = mapped_column()
+    # -1 (downvote) or +1 (upvote); a reversal removes the row entirely.
+    vote_value: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime]
+    # Set when an existing vote flips direction; None on first insert.
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    comment: Mapped["Comment"] = relationship(back_populates="comment_votes")
 
 
 class ExternalDiscussion(Base):

@@ -13,7 +13,9 @@ from fastapi.templating import Jinja2Templates
 
 from src.comments import (
     CommentError,
+    cast_comment_vote,
     delete_comment,
+    get_comment_votes,
     get_thread,
     post_comment,
     vote_comment,
@@ -126,11 +128,21 @@ def _comment_status(exc: CommentError) -> int:
 
 
 @app.get("/api/articles/{article_id}/comments")
-def api_get_comments(article_id: int) -> list[dict]:
-    """Return the nested comment thread for *article_id*; 404 if it is unknown."""
+def api_get_comments(
+    article_id: int,
+    sort: str = Query("score", description="score | newest | oldest"),
+    voter_id: str | None = Cookie(default=None),
+) -> list[dict]:
+    """Return the nested comment thread for *article_id*; 404 if it is unknown.
+
+    ``sort`` orders sibling comments by ``score`` (default), ``newest``, or
+    ``oldest``; an unknown value is a 400. Each node reports the caller's own
+    ``user_vote`` (read from the ``voter_id`` cookie) so the UI can restore vote
+    state, plus a ``collapsed`` flag for low-score comments.
+    """
     session = _session()
     try:
-        return get_thread(session, article_id)
+        return get_thread(session, article_id, sort=sort, user_id=voter_id)
     except CommentError as exc:
         raise HTTPException(status_code=_comment_status(exc), detail=str(exc)) from exc
     finally:
@@ -220,6 +232,65 @@ def api_vote_comment(comment_id: int, payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=_comment_status(exc), detail=str(exc)) from exc
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+def _comment_vote(comment_id: int, direction: int, voter_id: str | None) -> JSONResponse:
+    """Toggle *voter_id*'s vote on *comment_id* in *direction* (+1/-1).
+
+    Mints a voter_id cookie when absent. Voting the same direction twice removes
+    the vote (toggle); voting the other direction flips it. Returns the comment's
+    fresh vote state. 404 for an unknown comment, 400 when the caller is the
+    comment's own author or otherwise votes invalidly.
+    """
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+
+    session = _session()
+    try:
+        current = get_comment_votes(session, comment_id, voter_id)["user_vote"]
+        # Re-clicking the active arrow clears the vote; otherwise apply direction.
+        value = 0 if current == direction else direction
+        result = cast_comment_vote(session, comment_id, voter_id, value)
+    except CommentError as exc:
+        raise HTTPException(status_code=_comment_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+    response = JSONResponse(result)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.post("/api/comments/{comment_id}/upvote")
+def api_comment_upvote(
+    comment_id: int, voter_id: str | None = Cookie(default=None)
+) -> JSONResponse:
+    """Upvote *comment_id* for the cookie's voter (toggles off on repeat)."""
+    return _comment_vote(comment_id, 1, voter_id)
+
+
+@app.post("/api/comments/{comment_id}/downvote")
+def api_comment_downvote(
+    comment_id: int, voter_id: str | None = Cookie(default=None)
+) -> JSONResponse:
+    """Downvote *comment_id* for the cookie's voter (toggles off on repeat)."""
+    return _comment_vote(comment_id, -1, voter_id)
+
+
+@app.get("/api/comments/{comment_id}/votes")
+def api_comment_votes(
+    comment_id: int, voter_id: str | None = Cookie(default=None)
+) -> dict:
+    """Return *comment_id*'s vote counts and the caller's vote state; 404 if unknown."""
+    session = _session()
+    try:
+        return get_comment_votes(session, comment_id, voter_id)
+    except CommentError as exc:
+        raise HTTPException(status_code=_comment_status(exc), detail=str(exc)) from exc
     finally:
         session.close()
 
