@@ -213,6 +213,48 @@ class ExternalDiscussion(Base):
     story: Mapped["Story"] = relationship()
 
 
+class Submission(Base):
+    """A user-submitted story awaiting moderation before it becomes an article.
+
+    Submissions are the community-contributed counterpart to scraped
+    :class:`Story` rows. A submission carries the proposed ``title``, an optional
+    ``url`` (NULL for a self-post / text-only submission), an optional
+    ``description``, and an auto-assigned ``category`` ("ai" | "aerospace" |
+    "both" | "unknown"). It starts life ``status == "pending"`` and sits in the
+    moderation queue until an approve/reject decision is made; approval mints a
+    real :class:`Story` and records its id in ``story_id`` so the lifecycle is
+    idempotent (a second approve is a no-op). ``points`` is the karma awarded to
+    the submitter when the submission reaches the visibility threshold (on
+    approval).
+    """
+
+    __tablename__ = "submissions"
+    # The moderation queue scans pending rows oldest-first; this index keeps that
+    # scan cheap and gives a stable FIFO order.
+    __table_args__ = (Index("ix_submissions_status_created", "status", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Submitter id (cookie uuid / username), matching the user_id used elsewhere.
+    user_id: Mapped[str | None] = mapped_column(default=None, index=True)
+    title: Mapped[str]
+    # NULL for a self-post (text-only submission); otherwise the linked story URL.
+    url: Mapped[str | None] = mapped_column(default=None)
+    description: Mapped[str | None] = mapped_column(Text, default=None)
+    # "ai" | "aerospace" | "both" | "unknown"
+    category: Mapped[str] = mapped_column(default="unknown")
+    # "pending" | "approved" | "rejected"
+    status: Mapped[str] = mapped_column(default="pending")
+    created_at: Mapped[datetime]
+    # Set when an approve/reject decision is taken; None while still pending.
+    decided_at: Mapped[datetime | None] = mapped_column(default=None)
+    # The Story minted on approval; None until approved.
+    story_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stories.id"), default=None
+    )
+    # Karma granted to the submitter when this submission was approved.
+    points: Mapped[int] = mapped_column(default=0)
+
+
 class UserProfile(Base):
     """Public profile and cached reputation for a user identified by username.
 

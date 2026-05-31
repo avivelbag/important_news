@@ -29,6 +29,14 @@ from src.profiles import (
 )
 from src.search import SearchError, search_stories
 from src.source_health import health_dashboard
+from src.submissions import (
+    SubmissionError,
+    approve_submission,
+    create_submission,
+    find_duplicates,
+    list_pending,
+    reject_submission,
+)
 from src.voting import VoteError, cast_vote, get_distribution
 
 app = FastAPI(title="Important News Search")
@@ -303,6 +311,134 @@ def api_set_privacy(username: str, payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         session.close()
+
+
+def _submission_status(exc: SubmissionError) -> int:
+    """Map a SubmissionError to 404 for unknown ids, else 400 for bad input."""
+    return 404 if exc.not_found else 400
+
+
+@app.post("/api/submissions")
+def api_create_submission(
+    payload: dict = Body(...),
+    voter_id: str | None = Cookie(default=None),
+) -> JSONResponse:
+    """Create a pending user submission and return it.
+
+    Accepts ``title`` (required), optional ``url`` (omit for a self-post),
+    ``description``, and ``category`` in the JSON body. The submitter id defaults
+    to the ``voter_id`` cookie (a fresh uuid is minted and set when absent).
+    Responds 400 for an empty title or when the candidate duplicates an existing
+    story; 201 with the created submission otherwise.
+    """
+    title = payload.get("title")
+    if title is None:
+        raise HTTPException(status_code=400, detail="title required")
+
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+
+    session = _session()
+    try:
+        submission = create_submission(
+            session,
+            title,
+            url=payload.get("url"),
+            description=payload.get("description"),
+            user_id=voter_id,
+            category=payload.get("category"),
+        )
+        result = {
+            "id": submission.id,
+            "user_id": submission.user_id,
+            "title": submission.title,
+            "url": submission.url,
+            "description": submission.description,
+            "category": submission.category,
+            "status": submission.status,
+        }
+    except SubmissionError as exc:
+        raise HTTPException(status_code=_submission_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+    response = JSONResponse(result, status_code=201)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.get("/api/submissions")
+def api_list_submissions(
+    limit: int = Query(50, ge=1, le=200, description="max pending rows"),
+) -> list[dict]:
+    """Return the pending moderation queue (oldest first)."""
+    session = _session()
+    try:
+        return list_pending(session, limit)
+    except SubmissionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/submissions/duplicates")
+def api_submission_duplicates(
+    title: str = Query(..., description="candidate title"),
+    url: str | None = Query(None, description="candidate url"),
+) -> list[dict]:
+    """Return existing stories that would duplicate a candidate (live preview)."""
+    session = _session()
+    try:
+        return find_duplicates(session, title, url)
+    finally:
+        session.close()
+
+
+@app.post("/api/submissions/{submission_id}/approve")
+def api_approve_submission(submission_id: int) -> dict:
+    """Approve a submission, promoting it to a story; 404 if unknown."""
+    session = _session()
+    try:
+        story = approve_submission(session, submission_id)
+        return {"submission_id": submission_id, "story_id": story.id, "status": "approved"}
+    except SubmissionError as exc:
+        raise HTTPException(status_code=_submission_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/submissions/{submission_id}/reject")
+def api_reject_submission(submission_id: int) -> dict:
+    """Reject a pending submission; 404 if unknown."""
+    session = _session()
+    try:
+        submission = reject_submission(session, submission_id)
+        return {"submission_id": submission.id, "status": submission.status}
+    except SubmissionError as exc:
+        raise HTTPException(status_code=_submission_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/submit", response_class=HTMLResponse)
+def submit_page(request: Request) -> HTMLResponse:
+    """Render the submission form."""
+    return _TEMPLATES.TemplateResponse(request, "submit.html", {})
+
+
+@app.get("/moderation", response_class=HTMLResponse)
+def moderation_page(request: Request) -> HTMLResponse:
+    """Render the moderation queue of pending submissions."""
+    session = _session()
+    try:
+        pending = list_pending(session, 200)
+    finally:
+        session.close()
+    return _TEMPLATES.TemplateResponse(
+        request, "moderation.html", {"submissions": pending}
+    )
 
 
 @app.get("/api/sources/health")

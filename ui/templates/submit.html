@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Submit a Story</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 640px; color: #1a1a1a; }
+    h1 { margin-bottom: 1rem; }
+    label { display: block; margin: 0.75rem 0 0.25rem; font-weight: 600; font-size: 0.9rem; }
+    input, textarea, select { width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 6px; font: inherit; box-sizing: border-box; }
+    button { margin-top: 1rem; padding: 0.6rem 1.2rem; border: 0; border-radius: 6px; background: #ff6600; color: #fff; font-weight: 600; cursor: pointer; }
+    #dupes { margin-top: 1rem; }
+    #dupes .dupe { border: 1px solid #e0b000; background: #fff8e0; border-radius: 6px; padding: 0.5rem 0.75rem; margin: 0.4rem 0; font-size: 0.9rem; }
+    #msg { margin-top: 1rem; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>Submit a Story</h1>
+  <form id="submit-form">
+    <label for="title">Title</label>
+    <input id="title" name="title" required maxlength="300">
+
+    <label for="url">URL <span style="font-weight:400">(optional &mdash; leave blank for a self-post)</span></label>
+    <input id="url" name="url" type="url">
+
+    <label for="category">Category</label>
+    <select id="category" name="category">
+      <option value="">Auto-detect</option>
+      <option value="ai">AI</option>
+      <option value="aerospace">Aerospace</option>
+      <option value="both">AI &amp; Aerospace</option>
+    </select>
+
+    <label for="description">Description <span style="font-weight:400">(optional)</span></label>
+    <textarea id="description" name="description" rows="4"></textarea>
+
+    <div id="dupes"></div>
+    <button type="submit">Submit</button>
+    <div id="msg"></div>
+  </form>
+
+  <script>
+    var titleEl = document.getElementById("title");
+    var urlEl = document.getElementById("url");
+    var dupesEl = document.getElementById("dupes");
+    var msgEl = document.getElementById("msg");
+
+    var timer = null;
+    function checkDupes() {
+      var title = titleEl.value.trim();
+      if (title.length < 3) { dupesEl.innerHTML = ""; return; }
+      var q = "/api/submissions/duplicates?title=" + encodeURIComponent(title);
+      if (urlEl.value.trim()) q += "&url=" + encodeURIComponent(urlEl.value.trim());
+      fetch(q).then(function (r) { return r.json(); }).then(function (rows) {
+        if (!rows.length) { dupesEl.innerHTML = ""; return; }
+        var html = "<strong>Possible duplicates:</strong>";
+        rows.forEach(function (d) {
+          html += '<div class="dupe">' + (d.similarity * 100).toFixed(0) +
+            '% (' + d.reason + ') &mdash; <a href="' + d.url + '">' +
+            d.title + '</a></div>';
+        });
+        dupesEl.innerHTML = html;
+      });
+    }
+    function debounced() { clearTimeout(timer); timer = setTimeout(checkDupes, 300); }
+    titleEl.addEventListener("input", debounced);
+    urlEl.addEventListener("input", debounced);
+
+    document.getElementById("submit-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var payload = {
+        title: titleEl.value.trim(),
+        url: urlEl.value.trim() || null,
+        category: document.getElementById("category").value || null,
+        description: document.getElementById("description").value.trim() || null
+      };
+      fetch("/api/submissions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      }).then(function (r) {
+        return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+      }).then(function (res) {
+        if (res.ok) {
+          msgEl.style.color = "#2ca02c";
+          msgEl.textContent = "Submitted! Pending moderation (category: " + res.body.category + ").";
+          document.getElementById("submit-form").reset();
+          dupesEl.innerHTML = "";
+        } else {
+          msgEl.style.color = "#d62728";
+          msgEl.textContent = res.body.detail || "Submission failed.";
+        }
+      });
+    });
+  </script>
+</body>
+</html>
