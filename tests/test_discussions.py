@@ -3,6 +3,7 @@
 import datetime as dt
 
 import pytest
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from src.db import get_engine, get_session, init_db
@@ -158,7 +159,7 @@ def test_discovery_deduplicates_url_variations(session):
 
     created = discover_for_story(session, story, search_fn, now=NOW)
     assert len(created) == 1
-    assert session.query(ExternalDiscussion).count() == 1
+    assert session.scalar(select(func.count(ExternalDiscussion.id))) == 1
 
 
 def test_unique_constraint_blocks_exact_duplicate(session):
@@ -221,7 +222,7 @@ def test_force_bypasses_cache_but_still_dedupes(session):
     again = discover_for_story(session, story, search_fn, now=NOW, force=True)
     # Forced re-run finds the same URLs already stored -> creates nothing.
     assert again == []
-    assert session.query(ExternalDiscussion).count() == 3
+    assert session.scalar(select(func.count(ExternalDiscussion.id))) == 3
 
 
 def test_search_fn_exception_isolated_per_platform(session):
@@ -286,7 +287,7 @@ def test_verify_refreshes_live_and_prunes_dead_links(session):
     assert len(remaining) == 2
     assert all(d["platform"] != "github" for d in remaining)
     assert all(d["comment_count"] == 7 for d in remaining)
-    for row in session.query(ExternalDiscussion).all():
+    for row in session.scalars(select(ExternalDiscussion)).all():
         assert row.last_verified_at == later
 
 
@@ -311,5 +312,5 @@ def test_verify_treats_exceptions_as_unverified_not_dead(session):
     assert summary["errors"] == 1
     assert summary["removed"] == 0
     # Row survives untouched (not deleted, last_verified_at unchanged).
-    surviving = session.query(ExternalDiscussion).one()
+    surviving = session.scalars(select(ExternalDiscussion)).one()
     assert surviving.last_verified_at == NOW

@@ -199,7 +199,9 @@ def test_run_scraper_isolates_per_source_failures():
         scraper.SourceSpec(name="Bad", url="http://bad", kind="rss", category="ai"),
     ]
     fetch = _make_fetcher({"http://good": RSS_AI})
-    result = scraper.run_scraper(engine, sources=sources, fetch=fetch, now=NOW)
+    result = scraper.run_scraper(
+        engine, sources=sources, fetch=fetch, now=NOW, search_fn=None
+    )
     assert result.inserted == 2
     assert result.errors == 1
     assert result.per_source == {"Good": 2, "Bad": 0}

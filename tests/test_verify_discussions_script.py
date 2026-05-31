@@ -4,6 +4,8 @@ import datetime as dt
 
 import pytest
 
+from sqlalchemy import func, select
+
 from scripts.verify_discussions import verify
 from src.db import get_engine, get_session, init_db
 from src.models import ExternalDiscussion, Story
@@ -56,7 +58,7 @@ def test_custom_verifier_prunes_dead(engine):
     summary = verify(engine, verify_fn=lambda d: None)
     assert summary == {"verified": 0, "removed": 1, "errors": 0}
     session = get_session(engine)
-    assert session.query(ExternalDiscussion).count() == 0
+    assert session.scalar(select(func.count(ExternalDiscussion.id))) == 0
     session.close()
 
 

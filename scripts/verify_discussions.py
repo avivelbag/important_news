@@ -1,12 +1,4 @@
-"""Scheduled job: re-verify stored external discussion links.
-
-Walks every linked discussion, asks the verifier whether the thread is still
-alive, refreshes its comment count / engagement, and prunes dead links so the
-site never shows a rotted "Discuss on ..." link. Intended to run on a daily
-schedule. The actual platform calls live in ``verify_fn`` so this stays thin
-and testable; the default ``verify_fn`` is a no-op placeholder that keeps every
-link unchanged until real PRAW / GitHub / HN clients are wired in.
-"""
+"""Scheduled job: re-verify stored external discussion links, pruning dead ones."""
 
 import logging
 import sys
@@ -18,11 +10,6 @@ logger = logging.getLogger("verify_discussions")
 
 
 def _keep_unchanged(discussion) -> dict:
-    """Default verifier: report every link as live with its current metadata.
-
-    Replaced in production by a function that actually fetches the thread and
-    returns refreshed counts, or ``None`` when the thread 404s.
-    """
     return {
         "title": discussion.title,
         "comment_count": discussion.comment_count,
