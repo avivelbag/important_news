@@ -13,6 +13,7 @@ import src.db as db
 import src.deduplicator as deduplicator
 import src.models as models
 import src.scorer as scorer
+import src.source_health as source_health
 
 logger = logging.getLogger("scraper")
 
@@ -101,6 +102,7 @@ class ScrapeResult:
     inserted: int = 0
     errors: int = 0
     per_source: dict = dataclasses.field(default_factory=dict)
+    skipped_sources: list = dataclasses.field(default_factory=list)
 
 
 def _http_get(url: str, timeout: float = 15.0) -> str:
@@ -268,18 +270,44 @@ def insert_items(session, source, items, now: dt.datetime) -> tuple:
 
 
 def scrape_source(
-    engine, spec: SourceSpec, fetch: FetchFn, now: dt.datetime | None = None
+    engine,
+    spec: SourceSpec,
+    fetch: FetchFn,
+    now: dt.datetime | None = None,
+    failure_threshold: int = source_health.DEFAULT_FAILURE_THRESHOLD,
 ) -> int:
     connector = CONNECTORS.get(spec.kind)
     if connector is None:
         raise ValueError(f"unknown source kind: {spec.kind!r}")
     if now is None:
         now = dt.datetime.now(dt.timezone.utc)
-    items = connector(spec, fetch)
     session = db.get_session(engine)
     try:
         source = ensure_source(session, spec)
+        # Record the fetch outcome (success or failure) against source health so
+        # the dashboard and skip logic see every attempt, even ones that raise.
+        try:
+            items = connector(spec, fetch)
+        except Exception as exc:
+            source_health.record_fetch(
+                session,
+                source,
+                "error",
+                now,
+                error_message=f"{type(exc).__name__}: {exc}",
+                failure_threshold=failure_threshold,
+            )
+            session.commit()
+            raise
         inserted, skipped = insert_items(session, source, items, now)
+        source_health.record_fetch(
+            session,
+            source,
+            "success",
+            now,
+            article_count=inserted,
+            failure_threshold=failure_threshold,
+        )
         session.commit()
     finally:
         session.close()
@@ -298,13 +326,29 @@ def run_scraper(
     sources=DEFAULT_SOURCES,
     fetch: FetchFn = _http_get,
     now: dt.datetime | None = None,
+    skip_unhealthy: bool = False,
+    failure_threshold: int = source_health.DEFAULT_FAILURE_THRESHOLD,
 ) -> ScrapeResult:
     if now is None:
         now = dt.datetime.now(dt.timezone.utc)
     result = ScrapeResult()
     for spec in sources:
+        if skip_unhealthy:
+            # Avoid wasting time/quota re-fetching sources already marked broken.
+            session = db.get_session(engine)
+            try:
+                broken = source_health.is_source_broken(
+                    session, spec.name, failure_threshold
+                )
+            finally:
+                session.close()
+            if broken:
+                logger.warning("skipping broken source %s", spec.name)
+                result.skipped_sources.append(spec.name)
+                result.per_source[spec.name] = 0
+                continue
         try:
-            inserted = scrape_source(engine, spec, fetch, now)
+            inserted = scrape_source(engine, spec, fetch, now, failure_threshold)
         except Exception as exc:  # isolate per-source failures from the run
             logger.error("source %s failed: %s", spec.name, exc)
             result.errors += 1

@@ -20,6 +20,50 @@ class Source(Base):
     quality_weight: Mapped[float] = mapped_column(default=1.0)
 
     stories: Mapped[list["Story"]] = relationship(back_populates="source")
+    health: Mapped["SourceHealth | None"] = relationship(
+        back_populates="source", uselist=False
+    )
+    fetch_logs: Mapped[list["SourceFetchLog"]] = relationship(back_populates="source")
+
+
+class SourceHealth(Base):
+    """Rolled-up health state for a single source, updated after every fetch.
+
+    Exactly one row per source (``source_id`` is unique). ``status`` is derived
+    from ``consecutive_failures`` against a configurable threshold and is one of
+    ``"healthy"`` (0 failures), ``"degraded"`` (below threshold) or ``"broken"``
+    (at/above threshold) so the dashboard can render a green/yellow/red badge.
+    """
+
+    __tablename__ = "source_health"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), unique=True)
+    consecutive_failures: Mapped[int] = mapped_column(default=0)
+    last_fetch_time: Mapped[datetime | None] = mapped_column(default=None)
+    last_error: Mapped[str | None] = mapped_column(default=None)
+    status: Mapped[str] = mapped_column(default="healthy")
+
+    source: Mapped["Source"] = relationship(back_populates="health")
+
+
+class SourceFetchLog(Base):
+    """Append-only audit trail of every fetch attempt against a source.
+
+    One row per fetch; ``status`` is ``"success"`` or ``"error"``. Used to
+    compute success rate and average items-per-source for the health dashboard.
+    """
+
+    __tablename__ = "source_fetch_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), index=True)
+    fetch_time: Mapped[datetime]
+    status: Mapped[str]  # "success" | "error"
+    error_message: Mapped[str | None] = mapped_column(default=None)
+    article_count: Mapped[int] = mapped_column(default=0)
+
+    source: Mapped["Source"] = relationship(back_populates="fetch_logs")
 
 
 class Story(Base):

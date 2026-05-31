@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Query
 
 from src.db import get_engine, get_session, init_db
 from src.search import SearchError, search_stories
+from src.source_health import health_dashboard
 
 app = FastAPI(title="Important News Search")
 
@@ -41,3 +42,18 @@ def api_search(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         session.close()
+
+
+@app.get("/api/sources/health")
+def api_sources_health() -> dict:
+    """Return the source health dashboard payload.
+
+    Responds with ``{"metrics": {...}, "sources": [...]}`` where each source
+    carries a green/yellow/red status badge, consecutive failure count, success
+    rate, average items per fetch, last error, and a staleness flag.
+    """
+    global _engine
+    if _engine is None:
+        _engine = get_engine()
+        init_db(_engine)
+    return health_dashboard(_engine)
