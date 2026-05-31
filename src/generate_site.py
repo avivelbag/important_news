@@ -171,6 +171,7 @@ def render_story(story: Story, index: int, discussions: list[dict] | None = None
     story_attr = escape(str(story.id), quote=True) if story.id is not None else ""
     comment_count = story.comment_count or 0
     comments_label = "1 comment" if comment_count == 1 else f"{comment_count} comments"
+    bookmark_count = story.bookmark_count or 0
     # Link the submitter's name to their profile page so user profiles are
     # reachable from author names throughout the site.
     submitter_html = ""
@@ -196,7 +197,10 @@ def render_story(story: Story, index: int, discussions: list[dict] | None = None
         f"&middot; {sources_html}{submitter_html} "
         f"&middot; {escape(_format_timestamp(story.published_at))} "
         '&middot; <button type="button" class="comments-toggle">'
-        f'<span class="comment-count">{comments_label}</span></button></span>'
+        f'<span class="comment-count">{comments_label}</span></button> '
+        '&middot; <button type="button" class="bookmark-toggle" '
+        'aria-label="Save for later" aria-pressed="false">&#9734; '
+        f'<span class="bookmark-count">{bookmark_count}</span></button></span>'
         f"{_cached_block(story)}\n"
         '        <div class="comments" hidden></div>\n'
         f"{render_discussion_links(discussions or [])}\n"
@@ -259,6 +263,7 @@ def render_html(
         '    <h1>Important News</h1>\n'
         '    <nav class="site-nav">\n'
         '      <a href="index.html">Home</a>\n'
+        '      <a href="bookmarks.html">Saved</a>\n'
         '      <a href="leaderboard.html">Leaderboard</a>\n'
         "    </nav>\n"
         '    <form class="search" role="search" autocomplete="off">\n'
@@ -277,6 +282,7 @@ def render_html(
         '  <script src="search.js"></script>\n'
         '  <script src="vote.js"></script>\n'
         '  <script src="comments.js"></script>\n'
+        '  <script src="bookmark.js"></script>\n'
         "</body>\n"
         "</html>\n"
     )
@@ -917,6 +923,7 @@ def _page_shell(title: str, main_inner: str, scripts: list[str]) -> str:
         "    <h1>Important News</h1>\n"
         '    <nav class="site-nav">\n'
         '      <a href="index.html">Home</a>\n'
+        '      <a href="bookmarks.html">Saved</a>\n'
         '      <a href="leaderboard.html">Leaderboard</a>\n'
         "    </nav>\n"
         "  </header>\n"
@@ -1136,6 +1143,170 @@ def render_leaderboard_js() -> str:
     )
 
 
+def render_bookmarks_page() -> str:
+    """Return the static "Saved" page shell (``bookmarks.html``).
+
+    ``bookmarks.js`` fills ``#bookmarks`` with the caller's private saved-story
+    list fetched from ``/api/user/bookmarks``, offers a category filter, and
+    supports individual and bulk removal.
+    """
+    return _page_shell(
+        "Saved",
+        "    <h2>Saved for later</h2>\n"
+        '    <div class="bookmarks-controls">\n'
+        '      <select id="bookmark-category" aria-label="Filter by category">\n'
+        '        <option value="">All categories</option>\n'
+        '        <option value="ai">AI</option>\n'
+        '        <option value="aerospace">Aerospace</option>\n'
+        '        <option value="both">Both</option>\n'
+        "      </select>\n"
+        '      <button type="button" id="bookmark-bulk-delete">'
+        "Delete selected</button>\n"
+        "    </div>\n"
+        '    <ul class="bookmarks" id="bookmarks">\n'
+        '      <li class="muted">Loading…</li>\n'
+        "    </ul>",
+        ["bookmark.js"],
+    )
+
+
+def render_bookmark_js() -> str:
+    # Two responsibilities, one file: on listing pages it wires every
+    # .bookmark-toggle button to POST /api/articles/{id}/bookmark and updates the
+    # icon (★/☆) + count from the response; on bookmarks.html it fills #bookmarks
+    # from /api/user/bookmarks with a category filter, per-item remove, and bulk
+    # delete. Cookies carry the user id via credentials: "same-origin".
+    return (
+        "(function () {\n"
+        "  function esc(s) {\n"
+        '    var d = document.createElement("div");\n'
+        '    d.textContent = s == null ? "" : String(s);\n'
+        "    return d.innerHTML;\n"
+        "  }\n"
+        "\n"
+        "  function setToggle(button, bookmarked, count) {\n"
+        '    button.setAttribute("aria-pressed", bookmarked ? "true" : "false");\n'
+        '    button.classList.toggle("saved", !!bookmarked);\n'
+        '    var star = bookmarked ? "\\u2605" : "\\u2606";\n'
+        '    var c = button.querySelector(".bookmark-count");\n'
+        '    button.textContent = star + " ";\n'
+        '    var span = document.createElement("span");\n'
+        '    span.className = "bookmark-count";\n'
+        '    span.textContent = count == null ? (c ? c.textContent : "0") : count;\n'
+        "    button.appendChild(span);\n"
+        "  }\n"
+        "\n"
+        "  function toggle(button) {\n"
+        '    var li = button.closest("li.story");\n'
+        '    var id = li && li.getAttribute("data-story-id");\n'
+        "    if (!id) return;\n"
+        '    fetch("/api/articles/" + Number(id) + "/bookmark", {\n'
+        '      method: "POST",\n'
+        '      credentials: "same-origin"\n'
+        "    })\n"
+        "      .then(function (r) { return r.ok ? r.json() : null; })\n"
+        "      .then(function (data) {\n"
+        "        if (!data) return;\n"
+        "        setToggle(button, data.bookmarked, data.bookmark_count);\n"
+        "      })\n"
+        "      .catch(function () {});\n"
+        "  }\n"
+        "\n"
+        "  function initToggles() {\n"
+        '    var buttons = document.querySelectorAll("button.bookmark-toggle");\n'
+        "    for (var i = 0; i < buttons.length; i++) {\n"
+        '      buttons[i].addEventListener("click", function () { toggle(this); });\n'
+        "    }\n"
+        "  }\n"
+        "\n"
+        '  var listRoot = document.getElementById("bookmarks");\n'
+        "\n"
+        "  function renderList(data) {\n"
+        "    var items = (data && data.items) || [];\n"
+        "    if (!items.length) {\n"
+        "      listRoot.innerHTML = '<li class=\"muted\">No saved stories yet.</li>';\n"
+        "      return;\n"
+        "    }\n"
+        "    var html = '';\n"
+        "    for (var i = 0; i < items.length; i++) {\n"
+        "      var it = items[i];\n"
+        "      html += '<li class=\"bookmark\" data-story-id=\"' + esc(it.story_id) +\n"
+        "        '\"><label><input type=\"checkbox\" class=\"bookmark-select\"> ' +\n"
+        "        '</label><a class=\"title\" href=\"' + esc(it.url) + '\">' +\n"
+        "        esc(it.title) + '</a> <span class=\"meta\">Bookmarked on ' +\n"
+        "        esc(it.created_at || '') + ' &middot; ' + esc(it.topic) +\n"
+        "        '</span> <button type=\"button\" class=\"bookmark-remove\">"
+        "Remove</button></li>';\n"
+        "    }\n"
+        "    listRoot.innerHTML = html;\n"
+        "    bindListActions();\n"
+        "  }\n"
+        "\n"
+        "  function load() {\n"
+        '    var cat = document.getElementById("bookmark-category");\n'
+        '    var url = "/api/user/bookmarks";\n'
+        "    if (cat && cat.value) url += '?category=' + encodeURIComponent(cat.value);\n"
+        '    fetch(url, { credentials: "same-origin" })\n'
+        "      .then(function (r) { return r.ok ? r.json() : null; })\n"
+        "      .then(function (data) { if (data) renderList(data); })\n"
+        "      .catch(function () {\n"
+        "        listRoot.innerHTML = '<li class=\"muted\">Could not load bookmarks.</li>';\n"
+        "      });\n"
+        "  }\n"
+        "\n"
+        "  function removeOne(id) {\n"
+        '    fetch("/api/articles/" + Number(id) + "/bookmark", {\n'
+        '      method: "DELETE",\n'
+        '      credentials: "same-origin"\n'
+        "    }).then(function () { load(); }).catch(function () {});\n"
+        "  }\n"
+        "\n"
+        "  function bulkDelete() {\n"
+        '    var boxes = listRoot.querySelectorAll(".bookmark-select:checked");\n'
+        "    var ids = [];\n"
+        "    for (var i = 0; i < boxes.length; i++) {\n"
+        '      var li = boxes[i].closest("li.bookmark");\n'
+        '      if (li) ids.push(Number(li.getAttribute("data-story-id")));\n'
+        "    }\n"
+        "    if (!ids.length) return;\n"
+        '    fetch("/api/user/bookmarks/bulk-delete", {\n'
+        '      method: "POST",\n'
+        '      headers: { "Content-Type": "application/json" },\n'
+        '      credentials: "same-origin",\n'
+        '      body: JSON.stringify({ story_ids: ids })\n'
+        "    }).then(function () { load(); }).catch(function () {});\n"
+        "  }\n"
+        "\n"
+        "  function bindListActions() {\n"
+        '    var removes = listRoot.querySelectorAll(".bookmark-remove");\n'
+        "    for (var i = 0; i < removes.length; i++) {\n"
+        "      removes[i].addEventListener('click', function () {\n"
+        '        var li = this.closest("li.bookmark");\n'
+        '        if (li) removeOne(li.getAttribute("data-story-id"));\n'
+        "      });\n"
+        "    }\n"
+        "  }\n"
+        "\n"
+        "  function init() {\n"
+        "    initToggles();\n"
+        "    if (listRoot) {\n"
+        '      var cat = document.getElementById("bookmark-category");\n'
+        '      if (cat) cat.addEventListener("change", load);\n'
+        '      var bulk = document.getElementById("bookmark-bulk-delete");\n'
+        '      if (bulk) bulk.addEventListener("click", bulkDelete);\n'
+        "      load();\n"
+        "    }\n"
+        "  }\n"
+        "\n"
+        '  if (document.readyState === "loading") {\n'
+        '    document.addEventListener("DOMContentLoaded", init);\n'
+        "  } else {\n"
+        "    init();\n"
+        "  }\n"
+        "})();\n"
+    )
+
+
 def write_feeds(out_path: Path, stories: list[Story]) -> list[Path]:
     """Write the main RSS feed plus one feed per category with stories.
 
@@ -1189,6 +1360,10 @@ def generate_site(
     (out_path / "leaderboard.js").write_text(
         render_leaderboard_js(), encoding="utf-8"
     )
+    (out_path / "bookmarks.html").write_text(
+        render_bookmarks_page(), encoding="utf-8"
+    )
+    (out_path / "bookmark.js").write_text(render_bookmark_js(), encoding="utf-8")
     write_feeds(out_path, stories)
     return out_path
 
