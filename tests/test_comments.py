@@ -8,7 +8,9 @@ from fastapi.testclient import TestClient
 import src.api as api
 from src.comments import (
     DELETED_BODY,
+    CommentBadInput,
     CommentError,
+    CommentNotFound,
     delete_comment,
     get_thread,
     post_comment,
@@ -337,3 +339,50 @@ def test_comments_js_written_and_linked(session, engine, tmp_path):
     assert '<script src="comments.js"></script>' in index
     assert "/api/articles/" in js
     assert "/api/comments" in js
+
+
+# --- reviewer follow-ups -----------------------------------------------------
+
+
+def test_comments_js_renders_reply_affordances():
+    from src.generate_site import render_comments_js
+
+    js = render_comments_js()
+    assert "comment-reply-toggle" in js
+    assert "comment-reply-form" in js
+    assert "data-parent-id" in js
+    assert "parent_comment_id" in js
+
+
+def test_comments_js_reply_toggle_wired_to_parent():
+    from src.generate_site import render_comments_js
+
+    js = render_comments_js()
+    # The reply form carries the comment id as its parent and submit reads it.
+    assert "data-parent-id" in js
+    assert 'form.getAttribute("data-parent-id")' in js
+    assert "payload.parent_comment_id = Number(parent)" in js
+
+
+def test_not_found_subclasses_set_flag():
+    assert CommentNotFound("x").not_found is True
+    assert CommentBadInput("x").not_found is False
+    assert isinstance(CommentNotFound("x"), CommentError)
+    assert isinstance(CommentBadInput("x"), CommentError)
+
+
+def test_post_comment_raises_typed_errors(session):
+    story = _make_story(session)
+    with pytest.raises(CommentBadInput):
+        post_comment(session, story.id, "   ")
+    with pytest.raises(CommentNotFound):
+        post_comment(session, 999999, "hi")
+
+
+def test_comment_status_uses_flag_not_message():
+    from src.api import _comment_status
+
+    # A not-found error worded WITHOUT "does not exist" still maps to 404.
+    assert _comment_status(CommentNotFound("unknown id 5")) == 404
+    # A bad-input error that happens to contain "does not exist" stays 400.
+    assert _comment_status(CommentBadInput("value does not exist here")) == 400

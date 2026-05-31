@@ -557,11 +557,17 @@ def render_comments_js() -> str:
         "        children += renderNode(c.replies[i]);\n"
         "      }\n"
         "    }\n"
+        "    var reply = c.deleted ? '' :\n"
+        '      \'<button type="button" class="comment-reply-toggle">Reply</button>\' +\n'
+        '      \'<form class="comment-form comment-reply-form" data-parent-id="\' +\n'
+        "      esc(c.id) + '\" hidden>' +\n"
+        '      \'<textarea name="body" placeholder="Reply"></textarea>\' +\n'
+        '      \'<button type="submit">Post reply</button></form>\';\n'
         '    return \'<div class="comment" data-comment-id="\' + esc(c.id) + \'">\' +\n'
         '      \'<div class="comment-meta">\' + esc(author) +\n'
         '      \' &middot; <span class="comment-votes">\' + esc(c.vote_count) +\n'
         "      ' points</span> &middot; ' + esc(c.created_at || '') + '</div>' +\n"
-        '      \'<div class="comment-body">\' + esc(c.body) + \'</div>\' +\n'
+        '      \'<div class="comment-body">\' + esc(c.body) + \'</div>\' + reply +\n'
         '      \'<div class="comment-replies">\' + children + \'</div></div>\';\n'
         "  }\n"
         "\n"
@@ -588,11 +594,14 @@ def render_comments_js() -> str:
         "    var body = ta ? ta.value.trim() : '';\n"
         "    if (!body) return;\n"
         '    var id = story.getAttribute("data-story-id");\n'
+        '    var parent = form.getAttribute("data-parent-id");\n'
+        "    var payload = { story_id: Number(id), body: body };\n"
+        "    if (parent) payload.parent_comment_id = Number(parent);\n"
         '    fetch("/api/comments", {\n'
         '      method: "POST",\n'
         '      headers: { "Content-Type": "application/json" },\n'
         '      credentials: "same-origin",\n'
-        "      body: JSON.stringify({ story_id: Number(id), body: body })\n"
+        "      body: JSON.stringify(payload)\n"
         "    })\n"
         "      .then(function (r) { return r.ok ? r.json() : null; })\n"
         "      .then(function (data) { if (data) load(story, panel); });\n"
@@ -614,6 +623,13 @@ def render_comments_js() -> str:
         '          if (e.target && e.target.classList.contains("comment-form")) {\n'
         "            e.preventDefault();\n"
         "            submit(story, panel, e.target);\n"
+        "          }\n"
+        "        });\n"
+        '        panel.addEventListener("click", function (e) {\n'
+        "          if (e.target &&\n"
+        '              e.target.classList.contains("comment-reply-toggle")) {\n'
+        '            var f = e.target.nextElementSibling;\n'
+        "            if (f) f.hidden = !f.hidden;\n"
         "          }\n"
         "        });\n"
         "      })(stories[i]);\n"

@@ -26,7 +26,24 @@ _VALID_VOTES = (-1, 1)
 
 
 class CommentError(ValueError):
-    """Raised when a comment operation is invalid (bad input or unknown id)."""
+    """Base error for invalid comment operations.
+
+    ``not_found`` distinguishes an unknown story/comment id (HTTP 404) from
+    malformed input (HTTP 400) so callers route status without matching on the
+    error message text. Subclasses set it; the base default is bad-input.
+    """
+
+    not_found = False
+
+
+class CommentNotFound(CommentError):
+    """Raised when a referenced story or comment id does not exist (404)."""
+
+    not_found = True
+
+
+class CommentBadInput(CommentError):
+    """Raised when comment input is malformed or out of range (400)."""
 
 
 def _now() -> dt.datetime:
@@ -60,20 +77,20 @@ def post_comment(
     """
     text = (body or "").strip()
     if not text:
-        raise CommentError("comment body must not be empty")
+        raise CommentBadInput("comment body must not be empty")
     if len(text) > _MAX_BODY:
-        raise CommentError(f"comment body exceeds {_MAX_BODY} chars")
+        raise CommentBadInput(f"comment body exceeds {_MAX_BODY} chars")
 
     story = session.get(Story, story_id)
     if story is None:
-        raise CommentError(f"story {story_id} does not exist")
+        raise CommentNotFound(f"story {story_id} does not exist")
 
     if parent_comment_id is not None:
         parent = session.get(Comment, parent_comment_id)
         if parent is None:
-            raise CommentError(f"parent comment {parent_comment_id} does not exist")
+            raise CommentNotFound(f"parent comment {parent_comment_id} does not exist")
         if parent.story_id != story_id:
-            raise CommentError("parent comment belongs to a different story")
+            raise CommentBadInput("parent comment belongs to a different story")
 
     comment = Comment(
         story_id=story_id,
@@ -99,7 +116,7 @@ def delete_comment(session, comment_id: int) -> Comment:
     """
     comment = session.get(Comment, comment_id)
     if comment is None:
-        raise CommentError(f"comment {comment_id} does not exist")
+        raise CommentNotFound(f"comment {comment_id} does not exist")
     if not comment.deleted:
         comment.deleted = True
         comment.updated_at = _now()
@@ -118,10 +135,10 @@ def vote_comment(session, comment_id: int, vote_value: int) -> int:
     and committed.
     """
     if vote_value not in _VALID_VOTES:
-        raise CommentError(f"vote_value must be one of {_VALID_VOTES}")
+        raise CommentBadInput(f"vote_value must be one of {_VALID_VOTES}")
     comment = session.get(Comment, comment_id)
     if comment is None:
-        raise CommentError(f"comment {comment_id} does not exist")
+        raise CommentNotFound(f"comment {comment_id} does not exist")
     comment.vote_count += vote_value
     session.commit()
     return comment.vote_count
@@ -152,7 +169,7 @@ def get_thread(session, story_id: int) -> list[dict]:
     the tree as ``[deleted]`` stubs so their replies stay visible.
     """
     if session.get(Story, story_id) is None:
-        raise CommentError(f"story {story_id} does not exist")
+        raise CommentNotFound(f"story {story_id} does not exist")
 
     comments = session.scalars(
         select(Comment).where(Comment.story_id == story_id)

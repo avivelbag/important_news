@@ -114,7 +114,7 @@ def api_article_votes(article_id: int) -> dict:
 
 def _comment_status(exc: CommentError) -> int:
     """Map a CommentError to 404 for unknown ids, else 400 for bad input."""
-    return 404 if "does not exist" in str(exc) else 400
+    return 404 if exc.not_found else 400
 
 
 @app.get("/api/articles/{article_id}/comments")
