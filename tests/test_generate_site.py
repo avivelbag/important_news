@@ -160,6 +160,8 @@ def test_render_story_falls_back_to_raw_score_without_votes():
 def test_render_html_is_string_and_self_contained():
     html = render_html({})
     assert isinstance(html, str)
-    assert "<script" not in html
+    # Only the external filter.js reference is allowed; no inline script bodies.
+    assert html.count("<script") == 1
+    assert '<script src="filter.js"></script>' in html
     assert "http://" not in html and "https://" not in html
     assert isinstance(render_css(), str)

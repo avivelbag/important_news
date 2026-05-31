@@ -20,6 +20,10 @@ _TOPIC_LABELS = {
 # sorted alphabetically, so an unexpected topic value never crashes the build.
 _TOPIC_ORDER = ["ai", "aerospace", "both"]
 
+# Category filter buttons rendered in the nav. Values match the data-filter
+# attribute that filter.js reads; "all" is the default state.
+_FILTERS = [("all", "All"), ("ai", "AI"), ("aerospace", "Aerospace")]
+
 
 def fetch_stories(session) -> list[Story]:
     stmt = select(Story).order_by(
@@ -80,8 +84,10 @@ def render_section(topic: str, stories: list[Story]) -> str:
     rows = "\n".join(
         render_story(story, i) for i, story in enumerate(stories, start=1)
     )
+    topic_attr = escape(topic, quote=True)
     return (
-        f'  <section class="topic" id="topic-{escape(topic, quote=True)}">\n'
+        f'  <section class="topic" id="topic-{topic_attr}" '
+        f'data-topic="{topic_attr}">\n'
         f"    <h2>{escape(label)}</h2>\n"
         f'    <ol class="stories">\n{rows}\n    </ol>\n'
         "  </section>"
@@ -97,9 +103,9 @@ def render_html(grouped: dict[str, list[Story]]) -> str:
         body = '  <p class="empty">No stories yet.</p>'
 
     nav = "\n".join(
-        f'      <a href="#topic-{escape(topic, quote=True)}">'
-        f"{escape(_TOPIC_LABELS.get(topic, topic.title()))}</a>"
-        for topic in grouped
+        f'      <button type="button" class="filter" data-filter="{value}">'
+        f"{escape(label)}</button>"
+        for value, label in _FILTERS
     )
     return (
         "<!DOCTYPE html>\n"
@@ -113,12 +119,13 @@ def render_html(grouped: dict[str, list[Story]]) -> str:
         "<body>\n"
         "  <header>\n"
         '    <h1>Important News</h1>\n'
-        f'    <nav>\n{nav}\n    </nav>\n'
+        f'    <nav class="filters">\n{nav}\n    </nav>\n'
         "  </header>\n"
         '  <main>\n'
         f"{body}\n"
         "  </main>\n"
         '  <footer>Generated static site &middot; AI &amp; Aerospace</footer>\n'
+        '  <script src="filter.js"></script>\n'
         "</body>\n"
         "</html>\n"
     )
@@ -141,9 +148,19 @@ def render_css() -> str:
         "  padding: 0.5rem 1rem;\n"
         "}\n"
         "header h1 { margin: 0; font-size: 1.1rem; color: #fff; }\n"
-        "nav { margin-top: 0.25rem; }\n"
-        "nav a { color: #fff; margin-right: 1rem; text-decoration: none; font-size: 0.85rem; }\n"
-        "nav a:hover { text-decoration: underline; }\n"
+        "nav.filters { margin-top: 0.35rem; display: flex; flex-wrap: wrap; gap: 0.4rem; }\n"
+        "button.filter {\n"
+        "  border: 1px solid rgba(255, 255, 255, 0.6);\n"
+        "  background: transparent;\n"
+        "  color: #fff;\n"
+        "  font: inherit;\n"
+        "  font-size: 0.8rem;\n"
+        "  padding: 0.15rem 0.6rem;\n"
+        "  border-radius: 3px;\n"
+        "  cursor: pointer;\n"
+        "}\n"
+        "button.filter:hover { background: rgba(255, 255, 255, 0.18); }\n"
+        "button.filter.active { background: #fff; color: var(--accent); font-weight: bold; }\n"
         "main { max-width: 760px; margin: 0 auto; padding: 1rem; }\n"
         "h2 { font-size: 1rem; border-bottom: 1px solid #ddd; padding-bottom: 0.25rem; }\n"
         "ol.stories { list-style: none; padding: 0; margin: 0 0 2rem; }\n"
@@ -176,6 +193,76 @@ def render_css() -> str:
     )
 
 
+def render_js() -> str:
+    # A section's data-topic of "both" (AI & Aerospace) is shown under both the
+    # "ai" and "aerospace" filters; unknown topics only appear under "all".
+    return (
+        "(function () {\n"
+        '  var STORAGE_KEY = "category-filter";\n'
+        '  var VALID = ["all", "ai", "aerospace"];\n'
+        "\n"
+        "  function readState() {\n"
+        '    var hash = (window.location.hash || "").replace(/^#/, "");\n'
+        "    if (VALID.indexOf(hash) !== -1) return hash;\n"
+        "    try {\n"
+        "      var stored = window.localStorage.getItem(STORAGE_KEY);\n"
+        "      if (VALID.indexOf(stored) !== -1) return stored;\n"
+        "    } catch (e) {}\n"
+        '    return "all";\n'
+        "  }\n"
+        "\n"
+        "  function matches(topic, filter) {\n"
+        '    if (filter === "all") return true;\n'
+        "    if (topic === filter) return true;\n"
+        '    if (topic === "both") return filter === "ai" || filter === "aerospace";\n'
+        "    return false;\n"
+        "  }\n"
+        "\n"
+        "  function apply(filter) {\n"
+        '    var sections = document.querySelectorAll("section.topic");\n'
+        "    for (var i = 0; i < sections.length; i++) {\n"
+        '      var topic = sections[i].getAttribute("data-topic");\n'
+        "      sections[i].hidden = !matches(topic, filter);\n"
+        "    }\n"
+        '    var buttons = document.querySelectorAll("button.filter");\n'
+        "    for (var j = 0; j < buttons.length; j++) {\n"
+        '      var f = buttons[j].getAttribute("data-filter");\n'
+        '      buttons[j].classList.toggle("active", f === filter);\n'
+        "    }\n"
+        "  }\n"
+        "\n"
+        "  function setState(filter) {\n"
+        "    try {\n"
+        "      window.localStorage.setItem(STORAGE_KEY, filter);\n"
+        "    } catch (e) {}\n"
+        '    if (window.location.hash.replace(/^#/, "") !== filter) {\n'
+        '      window.location.hash = filter;\n'
+        "    }\n"
+        "    apply(filter);\n"
+        "  }\n"
+        "\n"
+        "  function init() {\n"
+        '    var buttons = document.querySelectorAll("button.filter");\n'
+        "    for (var i = 0; i < buttons.length; i++) {\n"
+        '      buttons[i].addEventListener("click", function () {\n'
+        '        setState(this.getAttribute("data-filter"));\n'
+        "      });\n"
+        "    }\n"
+        '    window.addEventListener("hashchange", function () {\n'
+        "      apply(readState());\n"
+        "    });\n"
+        "    apply(readState());\n"
+        "  }\n"
+        "\n"
+        '  if (document.readyState === "loading") {\n'
+        '    document.addEventListener("DOMContentLoaded", init);\n'
+        "  } else {\n"
+        "    init();\n"
+        "  }\n"
+        "})();\n"
+    )
+
+
 def generate_site(
     engine: Engine | None = None, out_dir: Path | str = _DEFAULT_OUT_DIR
 ) -> Path:
@@ -192,6 +279,7 @@ def generate_site(
 
     (out_path / "index.html").write_text(render_html(grouped), encoding="utf-8")
     (out_path / "style.css").write_text(render_css(), encoding="utf-8")
+    (out_path / "filter.js").write_text(render_js(), encoding="utf-8")
     return out_path
 
 
