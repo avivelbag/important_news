@@ -94,6 +94,10 @@ class Story(Base):
     )
     duplicates: Mapped[list["Story"]] = relationship(back_populates="canonical")
 
+    # Identifies the user who submitted this story (the cookie uuid / username
+    # used on Vote and Comment). NULL for scraped stories with no submitter.
+    submitted_by: Mapped[str | None] = mapped_column(default=None, index=True)
+
     source_id: Mapped[int | None] = mapped_column(ForeignKey("sources.id"), default=None)
     source: Mapped["Source | None"] = relationship(back_populates="stories")
     votes: Mapped[list["Vote"]] = relationship(back_populates="story")
@@ -160,3 +164,31 @@ class Comment(Base):
         back_populates="replies", remote_side=[id]
     )
     replies: Mapped[list["Comment"]] = relationship(back_populates="parent")
+
+
+class UserProfile(Base):
+    """Public profile and cached reputation for a user identified by username.
+
+    The rest of the schema identifies users by a free-form ``user_id`` string
+    (a cookie uuid or chosen name) stored directly on Votes/Comments/Stories;
+    this table is the one place that holds per-user *metadata* — a bio, the
+    private-account toggle, and the denormalised counts that the profile and
+    leaderboard pages read without re-aggregating the activity tables on every
+    request. ``username`` matches the ``user_id`` used elsewhere.
+    """
+
+    __tablename__ = "user_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(unique=True, index=True)
+    bio: Mapped[str | None] = mapped_column(Text, default=None)
+    # When true the profile is hidden from the leaderboard and renders as a
+    # minimal private stub; activity is never exposed.
+    is_private: Mapped[bool] = mapped_column(default=False)
+    # Cached reputation == total votes received on this user's comments. Kept in
+    # sync by profiles.refresh_profile_stats so the leaderboard sorts cheaply.
+    karma: Mapped[int] = mapped_column(default=0)
+    # Cached activity counts, refreshed alongside karma.
+    submission_count: Mapped[int] = mapped_column(default=0)
+    vote_count: Mapped[int] = mapped_column(default=0)
+    comment_count: Mapped[int] = mapped_column(default=0)

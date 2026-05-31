@@ -141,6 +141,12 @@ def vote_comment(session, comment_id: int, vote_value: int) -> int:
         raise CommentNotFound(f"comment {comment_id} does not exist")
     comment.vote_count += vote_value
     session.commit()
+    # Reputation is votes received on comments; refresh the author's cached
+    # karma so the profile/leaderboard reflect this vote without re-aggregating.
+    if comment.user_id:
+        from src.profiles import refresh_profile_stats
+
+        refresh_profile_stats(session, comment.user_id)
     return comment.vote_count
 
 

@@ -19,6 +19,14 @@ from src.comments import (
     vote_comment,
 )
 from src.db import get_engine, get_session, init_db
+from src.profiles import (
+    ProfileError,
+    get_profile,
+    get_user_articles,
+    get_user_comments,
+    leaderboard,
+    set_private,
+)
 from src.search import SearchError, search_stories
 from src.source_health import health_dashboard
 from src.voting import VoteError, cast_vote, get_distribution
@@ -211,6 +219,87 @@ def api_vote_comment(comment_id: int, payload: dict = Body(...)) -> dict:
     except CommentError as exc:
         raise HTTPException(status_code=_comment_status(exc), detail=str(exc)) from exc
     except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+def _profile_status(exc: ProfileError) -> int:
+    """Map a ProfileError to 404 for unknown/private users, else 400."""
+    msg = str(exc)
+    return 404 if ("does not exist" in msg or "is private" in msg) else 400
+
+
+# Declared before the /{username} route so the literal path wins the match.
+@app.get("/api/users/leaderboard")
+def api_leaderboard(
+    limit: int = Query(10, ge=1, le=100, description="top N users to return"),
+) -> list[dict]:
+    """Return the top users ranked by karma (private profiles excluded)."""
+    session = _session()
+    try:
+        return leaderboard(session, limit)
+    except ProfileError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/users/{username}")
+def api_user_profile(username: str) -> dict:
+    """Return *username*'s public profile; 404 if unknown, stub if private."""
+    session = _session()
+    try:
+        return get_profile(session, username)
+    except ProfileError as exc:
+        raise HTTPException(status_code=_profile_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/users/{username}/articles")
+def api_user_articles(
+    username: str,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+) -> dict:
+    """Return *username*'s paginated submitted/upvoted article activity."""
+    session = _session()
+    try:
+        return get_user_articles(session, username, page, per_page)
+    except ProfileError as exc:
+        raise HTTPException(status_code=_profile_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/users/{username}/comments")
+def api_user_comments(
+    username: str,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(20, ge=1, le=100),
+) -> dict:
+    """Return *username*'s paginated, timestamped comment history."""
+    session = _session()
+    try:
+        return get_user_comments(session, username, page, per_page)
+    except ProfileError as exc:
+        raise HTTPException(status_code=_profile_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/users/{username}/privacy")
+def api_set_privacy(username: str, payload: dict = Body(...)) -> dict:
+    """Set *username*'s private-account toggle from the JSON ``is_private`` flag."""
+    is_private = payload.get("is_private")
+    if not isinstance(is_private, bool):
+        raise HTTPException(status_code=400, detail="is_private (bool) required")
+    session = _session()
+    try:
+        profile = set_private(session, username, is_private)
+        return {"username": profile.username, "is_private": profile.is_private}
+    except ProfileError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         session.close()
