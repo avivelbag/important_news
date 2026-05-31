@@ -119,6 +119,12 @@ def render_html(grouped: dict[str, list[Story]]) -> str:
         "<body>\n"
         "  <header>\n"
         '    <h1>Important News</h1>\n'
+        '    <form class="search" role="search" autocomplete="off">\n'
+        '      <input type="search" id="search-box" name="q" '
+        'placeholder="Search stories…" minlength="2" maxlength="100" '
+        'aria-label="Search stories">\n'
+        '      <div id="search-results" class="search-results" hidden></div>\n'
+        "    </form>\n"
         f'    <nav class="filters">\n{nav}\n    </nav>\n'
         "  </header>\n"
         '  <main>\n'
@@ -126,6 +132,7 @@ def render_html(grouped: dict[str, list[Story]]) -> str:
         "  </main>\n"
         '  <footer>Generated static site &middot; AI &amp; Aerospace</footer>\n'
         '  <script src="filter.js"></script>\n'
+        '  <script src="search.js"></script>\n'
         "</body>\n"
         "</html>\n"
     )
@@ -161,6 +168,31 @@ def render_css() -> str:
         "}\n"
         "button.filter:hover { background: rgba(255, 255, 255, 0.18); }\n"
         "button.filter.active { background: #fff; color: var(--accent); font-weight: bold; }\n"
+        "form.search { position: relative; margin-top: 0.4rem; }\n"
+        "#search-box {\n"
+        "  width: 100%;\n"
+        "  max-width: 320px;\n"
+        "  padding: 0.25rem 0.5rem;\n"
+        "  font: inherit;\n"
+        "  font-size: 0.85rem;\n"
+        "  border: 1px solid rgba(255, 255, 255, 0.6);\n"
+        "  border-radius: 3px;\n"
+        "}\n"
+        ".search-results {\n"
+        "  position: absolute;\n"
+        "  z-index: 10;\n"
+        "  background: #fff;\n"
+        "  border: 1px solid #ddd;\n"
+        "  border-radius: 3px;\n"
+        "  max-width: 320px;\n"
+        "  width: 100%;\n"
+        "  max-height: 60vh;\n"
+        "  overflow-y: auto;\n"
+        "}\n"
+        ".search-result { padding: 0.3rem 0.5rem; border-bottom: 1px solid #eee; }\n"
+        ".search-result a { color: #222; text-decoration: none; font-size: 0.85rem; }\n"
+        ".search-result a:hover { text-decoration: underline; }\n"
+        ".search-empty { padding: 0.4rem 0.5rem; color: var(--muted); font-style: italic; }\n"
         "main { max-width: 760px; margin: 0 auto; padding: 1rem; }\n"
         "h2 { font-size: 1rem; border-bottom: 1px solid #ddd; padding-bottom: 0.25rem; }\n"
         "ol.stories { list-style: none; padding: 0; margin: 0 0 2rem; }\n"
@@ -263,6 +295,76 @@ def render_js() -> str:
     )
 
 
+def render_search_js() -> str:
+    # Debounces keystrokes (300ms) before hitting /api/search so the server is
+    # not pinged on every character; Enter submits immediately. Queries shorter
+    # than 2 chars are treated as empty (the API rejects them anyway).
+    return (
+        "(function () {\n"
+        '  var DEBOUNCE_MS = 300;\n'
+        '  var box = document.getElementById("search-box");\n'
+        '  var panel = document.getElementById("search-results");\n'
+        "  if (!box || !panel) return;\n"
+        "  var timer = null;\n"
+        "\n"
+        "  function activeCategory() {\n"
+        '    var active = document.querySelector("button.filter.active");\n'
+        '    var f = active ? active.getAttribute("data-filter") : "all";\n'
+        '    return f && f !== "all" ? f : null;\n'
+        "  }\n"
+        "\n"
+        "  function render(results) {\n"
+        "    if (!results.length) {\n"
+        '      panel.innerHTML = \'<p class="search-empty">No results</p>\';\n'
+        "      panel.hidden = false;\n"
+        "      return;\n"
+        "    }\n"
+        '    var html = "";\n'
+        "    for (var i = 0; i < results.length; i++) {\n"
+        "      var r = results[i];\n"
+        '      var a = document.createElement("a");\n'
+        "      a.href = r.url;\n"
+        "      a.textContent = r.title;\n"
+        '      var item = document.createElement("div");\n'
+        '      item.className = "search-result";\n'
+        "      item.appendChild(a);\n"
+        "      html += item.outerHTML;\n"
+        "    }\n"
+        "    panel.innerHTML = html;\n"
+        "    panel.hidden = false;\n"
+        "  }\n"
+        "\n"
+        "  function run() {\n"
+        "    var q = box.value.trim();\n"
+        "    if (q.length < 2) {\n"
+        '      panel.hidden = true;\n'
+        '      panel.innerHTML = "";\n'
+        "      return;\n"
+        "    }\n"
+        '    var url = "/api/search?q=" + encodeURIComponent(q);\n'
+        "    var cat = activeCategory();\n"
+        '    if (cat) url += "&category=" + encodeURIComponent(cat);\n'
+        "    fetch(url)\n"
+        "      .then(function (resp) { return resp.ok ? resp.json() : []; })\n"
+        "      .then(render)\n"
+        "      .catch(function () { panel.hidden = true; });\n"
+        "  }\n"
+        "\n"
+        '  box.addEventListener("input", function () {\n'
+        "    if (timer) clearTimeout(timer);\n"
+        "    timer = setTimeout(run, DEBOUNCE_MS);\n"
+        "  });\n"
+        '  box.addEventListener("keydown", function (e) {\n'
+        '    if (e.key === "Enter") {\n'
+        "      e.preventDefault();\n"
+        "      if (timer) clearTimeout(timer);\n"
+        "      run();\n"
+        "    }\n"
+        "  });\n"
+        "})();\n"
+    )
+
+
 def generate_site(
     engine: Engine | None = None, out_dir: Path | str = _DEFAULT_OUT_DIR
 ) -> Path:
@@ -280,6 +382,7 @@ def generate_site(
     (out_path / "index.html").write_text(render_html(grouped), encoding="utf-8")
     (out_path / "style.css").write_text(render_css(), encoding="utf-8")
     (out_path / "filter.js").write_text(render_js(), encoding="utf-8")
+    (out_path / "search.js").write_text(render_search_js(), encoding="utf-8")
     return out_path
 
 

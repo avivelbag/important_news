@@ -65,7 +65,8 @@ def test_unknown_topic_is_emitted_as_data_topic_without_crashing():
 def test_html_references_external_filter_script_once():
     html = render_html({"ai": [_make_story()]})
     assert html.count('<script src="filter.js"></script>') == 1
-    assert html.count("<script") == 1
+    # All scripts are external (have a src); none are inlined.
+    assert html.count("<script") == html.count("<script src=")
 
 
 def test_generate_site_writes_filter_js(session, engine, tmp_path):
