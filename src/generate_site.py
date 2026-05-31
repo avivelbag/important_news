@@ -7,6 +7,7 @@ from sqlalchemy import Engine, select
 
 from src.db import get_engine, get_session
 from src.models import Story
+from src.rss_generator import CATEGORY_FILTERS, generate_rss, story_in_category
 
 _DEFAULT_OUT_DIR = Path("docs")
 
@@ -115,6 +116,8 @@ def render_html(grouped: dict[str, list[Story]]) -> str:
         '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
         "  <title>Important News</title>\n"
         '  <link rel="stylesheet" href="style.css">\n'
+        '  <link rel="alternate" type="application/rss+xml" '
+        'href="feed.rss" title="Important News">\n'
         "</head>\n"
         "<body>\n"
         "  <header>\n"
@@ -263,6 +266,26 @@ def render_js() -> str:
     )
 
 
+def write_feeds(out_path: Path, stories: list[Story]) -> list[Path]:
+    """Write the main RSS feed plus one feed per category with stories.
+
+    Produces ``feed.rss`` (all stories) and ``feed-<category>.rss`` for every
+    category in :data:`CATEGORY_FILTERS` that has at least one matching story,
+    mirroring a ``/feed.rss?category=<cat>`` query on a static host. Returns
+    the paths written.
+    """
+    written = [out_path / "feed.rss"]
+    written[0].write_text(generate_rss(stories), encoding="utf-8")
+    for category in CATEGORY_FILTERS:
+        if any(story_in_category(s.topic, category) for s in stories):
+            path = out_path / f"feed-{category}.rss"
+            path.write_text(
+                generate_rss(stories, category=category), encoding="utf-8"
+            )
+            written.append(path)
+    return written
+
+
 def generate_site(
     engine: Engine | None = None, out_dir: Path | str = _DEFAULT_OUT_DIR
 ) -> Path:
@@ -273,13 +296,16 @@ def generate_site(
         engine = get_engine()
     session = get_session(engine)
     try:
-        grouped = group_by_topic(fetch_stories(session))
+        stories = fetch_stories(session)
     finally:
         session.close()
 
-    (out_path / "index.html").write_text(render_html(grouped), encoding="utf-8")
+    (out_path / "index.html").write_text(
+        render_html(group_by_topic(stories)), encoding="utf-8"
+    )
     (out_path / "style.css").write_text(render_css(), encoding="utf-8")
     (out_path / "filter.js").write_text(render_js(), encoding="utf-8")
+    write_feeds(out_path, stories)
     return out_path
 
 
