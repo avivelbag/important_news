@@ -89,6 +89,15 @@ class Story(Base):
     # e.g. ["Hacker News", "Reddit"]. NULL until a merge happens.
     merged_sources: Mapped[str | None] = mapped_column(default=None)
 
+    # Archived full article content fetched from the source URL. These are NULL
+    # until the scraper caches the page; old stories keep NULL and render with
+    # metadata only. cached_html is the raw page, cached_text the extracted
+    # plaintext, and cache_timestamp records when the snapshot was taken (used
+    # by the pruner to drop stale snapshots and bound database size).
+    cached_html: Mapped[str | None] = mapped_column(Text, default=None)
+    cached_text: Mapped[str | None] = mapped_column(Text, default=None)
+    cache_timestamp: Mapped[datetime | None] = mapped_column(default=None)
+
     canonical: Mapped["Story | None"] = relationship(
         back_populates="duplicates", remote_side=[id]
     )
