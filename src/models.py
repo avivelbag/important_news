@@ -132,6 +132,11 @@ class Story(Base):
     # JSON array of distinct source names that contributed to a merged story,
     # e.g. ["Hacker News", "Reddit"]. NULL until a merge happens.
     merged_sources: Mapped[str | None] = mapped_column(default=None)
+    # Lifecycle of this row in the dedup/merge flow: "none" (untouched),
+    # "canonical" (the surviving story other duplicates fold into), or "merged"
+    # (a duplicate whose votes/comments now live on its canonical via
+    # ``canonical_id``). Set by the manual admin merge in src/merge_service.py.
+    merge_status: Mapped[str] = mapped_column(default="none")
 
     # Archived full article content fetched from the source URL. These are NULL
     # until the scraper caches the page; old stories keep NULL and render with
@@ -530,6 +535,58 @@ class ModerationAction(Base):
     # Free-form human-readable context (e.g. flag count at action time).
     detail: Mapped[str | None] = mapped_column(Text, default=None)
     created_at: Mapped[datetime]
+
+
+class ArticleMerge(Base):
+    """Append-only audit row for one admin-initiated article merge.
+
+    Records that ``source_article_id`` was folded into the canonical
+    ``target_article_id`` by ``merged_by`` at ``merged_at``, capturing how much
+    engagement moved (``vote_count_transferred``) and exactly which comments
+    were redirected (``transferred_comment_ids``, a JSON list) so the operation
+    can be undone precisely. ``active`` is True while the merge is in effect and
+    flipped to False on rollback; ``rolled_back_at``/``rolled_back_by`` stamp the
+    undo. The index on ``source_article_id`` makes "is this story merged, and by
+    which merge?" lookups cheap.
+    """
+
+    __tablename__ = "article_merges"
+    __table_args__ = (Index("ix_article_merges_source", "source_article_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_article_id: Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    target_article_id: Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    # The acting admin id; None only for system-initiated merges (none today).
+    merged_by: Mapped[str | None] = mapped_column(default=None)
+    merged_at: Mapped[datetime]
+    vote_count_transferred: Mapped[int] = mapped_column(default=0)
+    # JSON list of Comment ids moved from source to target, kept so a rollback
+    # restores exactly the comments this merge redirected and no others.
+    transferred_comment_ids: Mapped[str | None] = mapped_column(Text, default=None)
+    # True while the merge stands; set False once rolled back.
+    active: Mapped[bool] = mapped_column(default=True)
+    rolled_back_at: Mapped[datetime | None] = mapped_column(default=None)
+    rolled_back_by: Mapped[str | None] = mapped_column(default=None)
+
+
+class DuplicateCandidate(Base):
+    """A near-duplicate pair flagged automatically when a new story is ingested.
+
+    ``story_id`` is the freshly ingested story; ``candidate_id`` is an existing
+    story it looks like a duplicate of. These rows form the detection queue an
+    admin reviews before deciding to merge; ``resolved`` flips to True once the
+    pair is merged or dismissed so the queue only shows open items.
+    """
+
+    __tablename__ = "duplicate_candidates"
+    __table_args__ = (Index("ix_dupe_candidates_story", "story_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    story_id: Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    similarity: Mapped[float] = mapped_column(default=0.0)
+    detected_at: Mapped[datetime]
+    resolved: Mapped[bool] = mapped_column(default=False)
 
 
 class ModerationNotification(Base):

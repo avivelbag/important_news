@@ -47,6 +47,15 @@ from src.moderation import (
     list_flagged,
     list_notifications,
 )
+from src.merge_service import (
+    MergeError,
+    list_duplicate_flags,
+    list_merges,
+    merge_articles,
+    merged_into,
+    potential_duplicates,
+    rollback_merge,
+)
 from src.profiles import (
     ProfileError,
     get_profile,
@@ -651,9 +660,16 @@ def _submission_status(exc: SubmissionError) -> int:
 ADMIN_TOKEN = os.environ.get("SUBMISSIONS_ADMIN_TOKEN", "swarm-admin")
 
 
-def _require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+def _require_admin(
+    x_admin_token: str | None = Header(default=None),
+    x_admin_user: str | None = Header(default=None),
+) -> str:
     if x_admin_token != ADMIN_TOKEN:
         raise HTTPException(status_code=403, detail="admin token required")
+    # The acting admin's identity, recorded on audited actions (merges, etc.).
+    # All admins share one token, so the client names itself via X-Admin-User;
+    # absent that we fall back to the generic "admin".
+    return (x_admin_user or "").strip() or "admin"
 
 
 @app.post("/api/submissions")
@@ -1169,6 +1185,117 @@ def api_set_preferences(
     if new_cookie:
         response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
     return response
+
+
+def _merge_status_code(exc: MergeError) -> int:
+    return 404 if exc.not_found else 400
+
+
+@app.get("/api/admin/articles/{article_id}/potential-duplicates")
+def api_potential_duplicates(
+    article_id: int,
+    _: str = Depends(_require_admin),
+) -> dict:
+    session = _session()
+    try:
+        candidates = potential_duplicates(session, article_id)
+        return {"article_id": article_id, "candidates": candidates}
+    except MergeError as exc:
+        raise HTTPException(
+            status_code=_merge_status_code(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/admin/duplicate-flags")
+def api_duplicate_flags(
+    unresolved_only: bool = Query(True),
+    limit: int = Query(100, ge=1, le=500),
+    _: str = Depends(_require_admin),
+) -> dict:
+    session = _session()
+    try:
+        return {"flags": list_duplicate_flags(
+            session, unresolved_only=unresolved_only, limit=limit
+        )}
+    finally:
+        session.close()
+
+
+@app.post("/api/admin/articles/{source_id}/merge-into/{target_id}")
+def api_merge_articles(
+    source_id: int,
+    target_id: int,
+    admin: str = Depends(_require_admin),
+) -> dict:
+    session = _session()
+    try:
+        return merge_articles(session, source_id, target_id, merged_by=admin)
+    except MergeError as exc:
+        raise HTTPException(
+            status_code=_merge_status_code(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/admin/merges/{merge_id}/rollback")
+def api_rollback_merge(
+    merge_id: int,
+    admin: str = Depends(_require_admin),
+) -> dict:
+    session = _session()
+    try:
+        return rollback_merge(session, merge_id, rolled_back_by=admin)
+    except MergeError as exc:
+        raise HTTPException(
+            status_code=_merge_status_code(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/admin/merges")
+def api_list_merges(
+    active_only: bool = Query(False),
+    limit: int = Query(100, ge=1, le=500),
+    _: str = Depends(_require_admin),
+) -> list[dict]:
+    session = _session()
+    try:
+        return list_merges(session, active_only=active_only, limit=limit)
+    except MergeError as exc:
+        raise HTTPException(
+            status_code=_merge_status_code(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/articles/{article_id}/merged-into")
+def api_merged_into(article_id: int) -> dict:
+    session = _session()
+    try:
+        return {"article_id": article_id, "merged_into": merged_into(session, article_id)}
+    except MergeError as exc:
+        raise HTTPException(
+            status_code=_merge_status_code(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.get("/admin/merges", response_class=HTMLResponse)
+def admin_merge_page(request: Request) -> HTMLResponse:
+    session = _session()
+    try:
+        merges = list_merges(session, limit=100)
+    finally:
+        session.close()
+    return _TEMPLATES.TemplateResponse(
+        request, "admin_merge.html", {"merges": merges}
+    )
 
 
 @app.get("/submit", response_class=HTMLResponse)

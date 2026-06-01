@@ -3,6 +3,7 @@ import datetime as dt
 from sqlalchemy import select
 
 import src.deduplicator as deduplicator
+import src.merge_service as merge_service
 from src.models import Story, Submission, UserProfile
 
 SUBMISSION_KARMA = 5
@@ -275,6 +276,10 @@ def approve_submission(session, submission_id: int) -> Story:
         _award_karma(session, submission.user_id, SUBMISSION_KARMA)
 
     session.commit()
+
+    # Automatic near-duplicate detection on the newly minted story: queues any
+    # similar existing stories for admin review without blocking approval.
+    merge_service.flag_duplicates_on_ingest(session, story.id, now=now)
     return story
 
 
