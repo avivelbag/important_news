@@ -57,11 +57,24 @@ function submitFlag(contentType, contentId) {
   });
 }
 
+// Escape user-derived values before they are concatenated into the innerHTML
+// string below. A flagged story's title is attacker-controlled, so without this
+// a title like `<img src=x onerror=...>` would execute in the admin's browser
+// the moment the queue loads (stored XSS via the very content being moderated).
+function escapeHtml(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function renderReasons(reasonCounts) {
   return Object.keys(reasonCounts || {})
     .sort()
     .map(function (k) {
-      return '<span class="reason">' + k + ": " + reasonCounts[k] + "</span>";
+      return '<span class="reason">' + escapeHtml(k) + ": " + escapeHtml(reasonCounts[k]) + "</span>";
     })
     .join("");
 }
@@ -125,10 +138,10 @@ function renderRow(item) {
   var cid = item.content_id;
   return (
     "<tr>" +
-    "<td>" + ct + hiddenTag + "</td>" +
-    "<td>" + cid + "</td>" +
-    "<td>" + (item.title || "") + "</td>" +
-    '<td class="count">' + item.flag_count + "</td>" +
+    "<td>" + escapeHtml(ct) + hiddenTag + "</td>" +
+    "<td>" + escapeHtml(cid) + "</td>" +
+    "<td>" + escapeHtml(item.title || "") + "</td>" +
+    '<td class="count">' + escapeHtml(item.flag_count) + "</td>" +
     "<td>" + renderReasons(item.reason_counts) + "</td>" +
     "<td>" +
     '<button class="hide" onclick="modAction(\'' + ct + "'," + cid + ",'hide')\">Hide</button>" +
