@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Important News</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="alternate" type="application/rss+xml" href="feed.rss" title="Important News">
+</head>
+<body>
+  <header>
+    <h1>Important News</h1>
+    <nav class="site-nav">
+      <a href="index.html">Home</a>
+      <a href="bookmarks.html">Saved</a>
+      <a href="leaderboard.html">Leaderboard</a>
+    </nav>
+    <form class="search" role="search" autocomplete="off">
+      <input type="search" id="search-box" name="q" placeholder="Search stories…" minlength="2" maxlength="100" aria-label="Search stories">
+      <div class="search-filters" id="search-filters">
+        <label>Sources <input type="text" id="filter-sources" name="sources" placeholder="e.g. Hacker News, Reddit" aria-label="Filter by sources (comma-separated)"></label>
+        <label>Topics <input type="text" id="filter-topics" name="topics" placeholder="e.g. ai, aerospace" aria-label="Filter by topics (comma-separated)"></label>
+        <label>Min score <input type="number" id="filter-min-score" name="min_score" min="0" step="1" aria-label="Minimum score"></label>
+        <label>Min comments <input type="number" id="filter-min-comments" name="min_comments" min="0" step="1" aria-label="Minimum comments"></label>
+        <label>From <input type="date" id="filter-date-from" name="date_from" aria-label="From date"></label>
+        <label>To <input type="date" id="filter-date-to" name="date_to" aria-label="To date"></label>
+        <label>Sort <select id="filter-sort" name="sort" aria-label="Sort results">
+          <option value="relevance">Relevance</option>
+          <option value="recent">Most recent</option>
+          <option value="score">Highest score</option>
+        </select></label>
+        <button type="button" id="filter-clear">Clear filters</button>
+      </div>
+      <div id="search-results" class="search-results" hidden></div>
+    </form>
+    <nav class="filters">
+      <button type="button" class="filter" data-filter="all">All</button>
+      <button type="button" class="filter" data-filter="ai">AI</button>
+      <button type="button" class="filter" data-filter="aerospace">Aerospace</button>
+    </nav>
+  </header>
+  <main>
+    <section id="personalized-feed" class="personalized" hidden>
+      <div class="feed-controls">
+        <span class="feed-label">Your feed</span>
+        <div class="algo-switch">
+          <button type="button" class="algo" data-algo="balanced">Balanced</button>
+          <button type="button" class="algo" data-algo="trending">Trending</button>
+          <button type="button" class="algo" data-algo="recent">Recent</button>
+          <button type="button" class="algo" data-algo="followed">Followed</button>
+        </div>
+        <button type="button" id="toggle-feed" class="toggle-feed">View all stories</button>
+      </div>
+      <ol id="personalized-list" class="stories"></ol>
+      <p id="personalized-empty" class="empty" hidden>No personalized stories yet — vote and follow topics to train your feed.</p>
+    </section>
+    <div id="global-feed">
+  <p class="empty">No stories yet.</p>
+    </div>
+  </main>
+  <footer>Generated static site &middot; AI &amp; Aerospace</footer>
+  <script src="filter.js"></script>
+  <script src="search.js"></script>
+  <script src="vote.js"></script>
+  <script src="comments.js"></script>
+  <script src="bookmark.js"></script>
+  <script src="feed.js"></script>
+</body>
+</html>

@@ -1541,6 +1541,12 @@ def generate_site(
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
 
+    # The site is fully pre-rendered HTML, so disable GitHub Pages' Jekyll
+    # build. Without this marker Pages runs Jekyll (jekyll-theme-primer) over
+    # the output, which both wastes a build step and can rewrite/clobber the
+    # flat asset layout this generator emits.
+    (out_path / ".nojekyll").write_text("", encoding="utf-8")
+
     if engine is None:
         engine = get_engine()
     session = get_session(engine)

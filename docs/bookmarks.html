@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Saved</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Important News</h1>
+    <nav class="site-nav">
+      <a href="index.html">Home</a>
+      <a href="bookmarks.html">Saved</a>
+      <a href="leaderboard.html">Leaderboard</a>
+    </nav>
+  </header>
+  <main>
+    <h2>Saved for later</h2>
+    <div class="bookmarks-controls">
+      <select id="bookmark-category" aria-label="Filter by category">
+        <option value="">All categories</option>
+        <option value="ai">AI</option>
+        <option value="aerospace">Aerospace</option>
+        <option value="both">Both</option>
+      </select>
+      <button type="button" id="bookmark-bulk-delete">Delete selected</button>
+    </div>
+    <ul class="bookmarks" id="bookmarks">
+      <li class="muted">Loading…</li>
+    </ul>
+  </main>
+  <footer>Generated static site &middot; AI &amp; Aerospace</footer>
+  <script src="bookmark.js"></script>
+</body>
+</html>
