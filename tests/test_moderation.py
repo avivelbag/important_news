@@ -359,3 +359,110 @@ def test_api_dismiss_and_delete_require_admin(client, api_engine):
 def test_api_flag_missing_story_404(client):
     resp = client.post("/api/stories/424242/flag", json={"reason": "spam"})
     assert resp.status_code == 404
+
+
+# --- follow-up: audit-trail endpoint, moderator identity, hidden comments ---
+
+
+def test_hidden_comment_is_masked_in_thread(session):
+    story = _make_story(session)
+    visible = _make_comment(session, story, body="keep me", user_id="author-a")
+    hidden = _make_comment(session, story, body="secret abuse", user_id="author-b")
+    for i in range(AUTO_HIDE_THRESHOLD):
+        flag_content(session, "comment", hidden.id, f"reporter-{i}", "abuse")
+
+    from src.comments import HIDDEN_BODY, get_thread
+
+    nodes = {n["id"]: n for n in get_thread(session, story.id)}
+    assert nodes[visible.id]["body"] == "keep me"
+    assert nodes[hidden.id]["is_hidden"] is True
+    assert nodes[hidden.id]["body"] == HIDDEN_BODY
+    assert nodes[hidden.id]["user_id"] is None
+    assert "secret abuse" not in nodes[hidden.id]["body"]
+
+
+def test_hidden_comment_replies_stay_visible(session):
+    story = _make_story(session)
+    parent = _make_comment(session, story, body="parent", user_id="p")
+    child = _make_comment(
+        session, story, body="child reply", user_id="c", parent_comment_id=parent.id
+    )
+    for i in range(AUTO_HIDE_THRESHOLD):
+        flag_content(session, "comment", parent.id, f"reporter-{i}", "abuse")
+
+    from src.comments import get_thread
+
+    roots = get_thread(session, story.id)
+    assert len(roots) == 1
+    assert roots[0]["id"] == parent.id
+    assert roots[0]["is_hidden"] is True
+    assert roots[0]["replies"][0]["id"] == child.id
+    assert roots[0]["replies"][0]["body"] == "child reply"
+
+
+def test_api_list_actions_returns_audit_trail(client, api_engine):
+    session = get_session(api_engine)
+    story = _make_story(session)
+    client.post(f"/api/stories/{story.id}/flag", json={"reason": "spam"})
+    hide = client.post(
+        f"/api/flags/story/{story.id}/hide",
+        headers={"X-Admin-Token": "swarm-admin"},
+    )
+    assert hide.status_code == 200
+
+    actions = client.get(
+        f"/api/flags/story/{story.id}/actions",
+        headers={"X-Admin-Token": "swarm-admin"},
+    )
+    assert actions.status_code == 200
+    payload = actions.json()
+    assert payload[0]["action"] == "hide"
+    assert payload[0]["moderator"] == "admin"
+
+
+def test_api_list_actions_requires_admin(client, api_engine):
+    session = get_session(api_engine)
+    story = _make_story(session)
+    resp = client.get(f"/api/flags/story/{story.id}/actions")
+    assert resp.status_code == 403
+
+
+def test_api_list_actions_unknown_type_400(client, api_engine):
+    resp = client.get(
+        "/api/flags/widget/1/actions",
+        headers={"X-Admin-Token": "swarm-admin"},
+    )
+    assert resp.status_code == 400
+
+
+def test_moderator_identity_not_raw_token(client, api_engine):
+    session = get_session(api_engine)
+    story = _make_story(session)
+    client.post(f"/api/stories/{story.id}/flag", json={"reason": "spam"})
+    client.post(
+        f"/api/flags/story/{story.id}/hide",
+        headers={"X-Admin-Token": "swarm-admin"},
+    )
+    rows = (
+        get_session(api_engine)
+        .query(ModerationAction)
+        .filter(ModerationAction.action == "hide")
+        .all()
+    )
+    assert rows
+    for row in rows:
+        assert row.moderator == "admin"
+        assert "swarm-admin" not in (row.moderator or "")
+
+
+def test_flag_moderation_page_served(client):
+    resp = client.get("/moderation/flags")
+    assert resp.status_code == 200
+    assert "Flag Moderation Queue" in resp.text
+    assert "/static/moderation.js" in resp.text
+
+
+def test_static_moderation_js_served(client):
+    resp = client.get("/static/moderation.js")
+    assert resp.status_code == 200
+    assert "submitFlag" in resp.text

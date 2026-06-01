@@ -74,7 +74,6 @@ def _model(content_type: str):
 
 
 def _get_content(session, content_type: str, content_id: int):
-    """Return the ORM object for *(content_type, content_id)* or raise 404."""
     obj = session.get(_model(content_type), content_id)
     if obj is None:
         raise ModerationError(
@@ -84,22 +83,10 @@ def _get_content(session, content_type: str, content_id: int):
 
 
 def _owner(content_type: str, obj) -> str | None:
-    """Return the owning user_id of a content object, or None if anonymous.
-
-    Stories carry the owner on ``submitted_by`` (scraped stories have none);
-    comments carry it on ``user_id``.
-    """
     return obj.submitted_by if content_type == STORY else obj.user_id
 
 
 def _recompute(session, content_type: str, obj) -> None:
-    """Refresh an object's denormalised flag fields from its open flags.
-
-    Recomputes ``flag_count`` (number of open flags) and the
-    ``flag_reason_counts`` JSON map from the live :class:`Flag` rows. Does not
-    itself toggle ``is_hidden`` — auto-hide is applied separately by the caller
-    that created the flag.
-    """
     rows = session.execute(
         select(Flag.reason, func.count())
         .where(
@@ -199,7 +186,6 @@ def flag_content(
 
 
 def _resolve_flags(session, content_type: str, content_id: int, status: str) -> int:
-    """Mark every open flag on an item *status* and return how many changed."""
     flags = session.scalars(
         select(Flag).where(
             Flag.content_type == content_type,
@@ -216,7 +202,6 @@ def _resolve_flags(session, content_type: str, content_id: int, status: str) -> 
 def _notify_owner(
     session, content_type: str, obj, action: str, message: str
 ) -> None:
-    """Queue a notification to the content owner, if the content has one."""
     owner = _owner(content_type, obj)
     if not owner:
         return
@@ -363,7 +348,6 @@ def dismiss_flags(
 
 
 def _title_for(session, content_type: str, content_id: int) -> str:
-    """Return a short human label for a flagged item for the dashboard."""
     obj = session.get(_model(content_type), content_id)
     if obj is None:
         return ""

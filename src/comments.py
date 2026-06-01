@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from src.models import Comment, CommentVote, Story
 
 DELETED_BODY = "[deleted]"
+HIDDEN_BODY = "[flagged and hidden pending review]"
 
 _MAX_BODY = 10_000
 _VALID_VOTES = (-1, 1)
@@ -277,32 +278,43 @@ def get_comment_votes(
 
 
 def _serialize(comment: Comment, voted: dict | None = None, op_id: str | None = None) -> dict:
-    """Render one comment to a dict, masking body/author when soft-deleted.
+    """Render one comment to a dict, masking body/author when soft-deleted or hidden.
 
     *voted* maps comment id to the requesting user's vote (-1/0/+1) so each node
     reports the caller's ``user_vote``. *op_id* is the story submitter so a
     comment authored by the original poster is flagged ``is_op``. ``score`` is an
     alias of ``vote_count`` and ``collapsed`` marks low-score nodes hidden by
     default; both are omitted from a deleted stub's meaning but still reported.
+    A comment moderated to ``is_hidden`` is masked the same way as a deleted one
+    so the public thread keeps its structure (replies stay visible) while the
+    flagged body is withheld.
     """
     user_vote = (voted or {}).get(comment.id, 0)
+    masked = comment.deleted or comment.is_hidden
+    if comment.deleted:
+        body = DELETED_BODY
+    elif comment.is_hidden:
+        body = HIDDEN_BODY
+    else:
+        body = comment.body
     return {
         "id": comment.id,
         "story_id": comment.story_id,
         "parent_comment_id": comment.parent_comment_id,
-        "user_id": None if comment.deleted else comment.user_id,
-        "body": DELETED_BODY if comment.deleted else comment.body,
+        "user_id": None if masked else comment.user_id,
+        "body": body,
         "vote_count": comment.vote_count,
         "score": comment.vote_count,
         "user_vote": user_vote,
         "collapsed": comment.vote_count <= _COLLAPSE_THRESHOLD,
         "is_op": (
-            not comment.deleted
+            not masked
             and op_id is not None
             and comment.user_id is not None
             and comment.user_id == op_id
         ),
         "deleted": comment.deleted,
+        "is_hidden": comment.is_hidden,
         "created_at": comment.created_at.isoformat() if comment.created_at else None,
         "replies": [],
     }

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from src.bookmarks import (
@@ -36,6 +37,7 @@ from src.moderation import (
     flag_content,
     flagger_stats,
     hide_content,
+    list_actions,
     list_flagged,
     list_notifications,
 )
@@ -75,9 +77,9 @@ from src.voting import VoteError, cast_vote, get_distribution
 
 app = FastAPI(title="Important News Search")
 
-_TEMPLATES = Jinja2Templates(
-    directory=str(Path(__file__).resolve().parent.parent / "ui" / "templates")
-)
+_UI_DIR = Path(__file__).resolve().parent.parent / "ui"
+_TEMPLATES = Jinja2Templates(directory=str(_UI_DIR / "templates"))
+app.mount("/static", StaticFiles(directory=str(_UI_DIR / "static")), name="static")
 
 _engine = None
 
@@ -647,12 +649,6 @@ def _moderation_status(exc: ModerationError) -> int:
 
 
 def _flag(content_type: str, content_id: int, payload: dict, voter_id: str | None):
-    """Shared body for the story/comment flag endpoints.
-
-    Mints a voter cookie for first-time flaggers (mirroring submissions) and
-    maps :class:`ModerationError` to 400/404. Returns ``(result, new_cookie,
-    voter_id)`` so the caller can attach a Set-Cookie when one was issued.
-    """
     reason = payload.get("reason")
     if reason is None:
         raise HTTPException(status_code=400, detail="reason required")
@@ -731,12 +727,11 @@ def api_flagger_stats(
 def api_hide_content(
     content_type: str,
     content_id: int,
-    x_admin_token: str | None = Header(default=None),
     _: None = Depends(_require_admin),
 ) -> dict:
     session = _session()
     try:
-        return hide_content(session, content_type, content_id, x_admin_token or "admin")
+        return hide_content(session, content_type, content_id, "admin")
     except ModerationError as exc:
         raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
     finally:
@@ -747,12 +742,11 @@ def api_hide_content(
 def api_delete_content(
     content_type: str,
     content_id: int,
-    x_admin_token: str | None = Header(default=None),
     _: None = Depends(_require_admin),
 ) -> dict:
     session = _session()
     try:
-        return delete_content(session, content_type, content_id, x_admin_token or "admin")
+        return delete_content(session, content_type, content_id, "admin")
     except ModerationError as exc:
         raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
     finally:
@@ -763,12 +757,27 @@ def api_delete_content(
 def api_dismiss_flags(
     content_type: str,
     content_id: int,
-    x_admin_token: str | None = Header(default=None),
     _: None = Depends(_require_admin),
 ) -> dict:
     session = _session()
     try:
-        return dismiss_flags(session, content_type, content_id, x_admin_token or "admin")
+        return dismiss_flags(session, content_type, content_id, "admin")
+    except ModerationError as exc:
+        raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/flags/{content_type}/{content_id}/actions")
+def api_list_actions(
+    content_type: str,
+    content_id: int,
+    limit: int = Query(100, ge=1, le=500),
+    _: None = Depends(_require_admin),
+) -> list[dict]:
+    session = _session()
+    try:
+        return list_actions(session, content_type, content_id, limit)
     except ModerationError as exc:
         raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
     finally:
@@ -990,6 +999,11 @@ def moderation_page(request: Request) -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(
         request, "moderation.html", {"submissions": pending}
     )
+
+
+@app.get("/moderation/flags", response_class=HTMLResponse)
+def flag_moderation_page(request: Request) -> HTMLResponse:
+    return _TEMPLATES.TemplateResponse(request, "flag_queue.html", {})
 
 
 @app.get("/api/sources/health")
