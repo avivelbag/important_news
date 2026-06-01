@@ -41,6 +41,14 @@ from src.moderation import (
     list_flagged,
     list_notifications,
 )
+from src.merge_service import (
+    MergeError,
+    list_merges,
+    merge_articles,
+    merged_into,
+    potential_duplicates,
+    rollback_merge,
+)
 from src.profiles import (
     ProfileError,
     get_profile,
@@ -1163,6 +1171,128 @@ def api_set_preferences(
     if new_cookie:
         response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
     return response
+
+
+def _merge_status_code(exc: MergeError) -> int:
+    """Map a MergeError to 404 for unknown story/merge, else 400."""
+    return 404 if exc.not_found else 400
+
+
+@app.get("/api/admin/articles/{article_id}/potential-duplicates")
+def api_potential_duplicates(
+    article_id: int,
+    _: None = Depends(_require_admin),
+) -> dict:
+    """Return near-duplicate candidates for *article_id* with merge previews.
+
+    Each candidate carries the comparison fields (title, source, similarity,
+    vote/comment counts, publish time) the admin UI shows side-by-side before a
+    merge. Responds 404 when the article does not exist.
+    """
+    session = _session()
+    try:
+        candidates = potential_duplicates(session, article_id)
+        return {"article_id": article_id, "candidates": candidates}
+    except MergeError as exc:
+        raise HTTPException(
+            status_code=_merge_status_code(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/admin/articles/{source_id}/merge-into/{target_id}")
+def api_merge_articles(
+    source_id: int,
+    target_id: int,
+    _: None = Depends(_require_admin),
+) -> dict:
+    """Merge *source_id* into the canonical *target_id*; admin only.
+
+    Consolidates votes, redirects the source's comments to the target, and logs
+    the merge for audit/rollback. Responds 404 for an unknown story and 400 when
+    the merge is invalid (same story, or source already merged).
+    """
+    session = _session()
+    try:
+        return merge_articles(session, source_id, target_id, merged_by="admin")
+    except MergeError as exc:
+        raise HTTPException(
+            status_code=_merge_status_code(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/admin/merges/{merge_id}/rollback")
+def api_rollback_merge(
+    merge_id: int,
+    _: None = Depends(_require_admin),
+) -> dict:
+    """Undo merge *merge_id* within the rollback window; admin only.
+
+    Responds 404 when the merge is unknown and 400 when it was already rolled
+    back or is past the rollback window.
+    """
+    session = _session()
+    try:
+        return rollback_merge(session, merge_id, rolled_back_by="admin")
+    except MergeError as exc:
+        raise HTTPException(
+            status_code=_merge_status_code(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/admin/merges")
+def api_list_merges(
+    active_only: bool = Query(False),
+    limit: int = Query(100, ge=1, le=500),
+    _: None = Depends(_require_admin),
+) -> list[dict]:
+    """Return the merge audit log (newest first); admin only."""
+    session = _session()
+    try:
+        return list_merges(session, active_only=active_only, limit=limit)
+    except MergeError as exc:
+        raise HTTPException(
+            status_code=_merge_status_code(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/articles/{article_id}/merged-into")
+def api_merged_into(article_id: int) -> dict:
+    """Return the canonical story *article_id* was merged into, if any.
+
+    Powers the public "this story was merged into [canonical]" banner. Returns
+    ``{article_id, merged_into}`` where ``merged_into`` is null for a canonical
+    or untouched story. Responds 404 when the article does not exist.
+    """
+    session = _session()
+    try:
+        return {"article_id": article_id, "merged_into": merged_into(session, article_id)}
+    except MergeError as exc:
+        raise HTTPException(
+            status_code=_merge_status_code(exc), detail=str(exc)
+        ) from exc
+    finally:
+        session.close()
+
+
+@app.get("/admin/merges", response_class=HTMLResponse)
+def admin_merge_page(request: Request) -> HTMLResponse:
+    """Render the admin merge-management dashboard (recent merge history)."""
+    session = _session()
+    try:
+        merges = list_merges(session, limit=100)
+    finally:
+        session.close()
+    return _TEMPLATES.TemplateResponse(
+        request, "admin_merge.html", {"merges": merges}
+    )
 
 
 @app.get("/submit", response_class=HTMLResponse)

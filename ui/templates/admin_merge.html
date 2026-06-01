@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Article Merge Management</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; color: #1a1a1a; }
+    h1, h2 { margin-bottom: 1rem; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 2rem; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; font-size: 0.9rem; vertical-align: top; }
+    th { background: #fafafa; }
+    button { padding: 0.3rem 0.7rem; border: 0; border-radius: 5px; cursor: pointer; font-weight: 600; }
+    .merge { background: #2ca02c; color: #fff; }
+    .rollback { background: #d62728; color: #fff; }
+    .rolled-back { color: #999; text-decoration: line-through; }
+    .empty { color: #666; }
+    .preview { display: flex; gap: 1rem; margin: 1rem 0; }
+    .card { border: 1px solid #ddd; border-radius: 6px; padding: 0.75rem; flex: 1; }
+    input { padding: 0.3rem; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <h1>Article Merge Management</h1>
+
+  <h2>Find potential duplicates</h2>
+  <p>
+    <input id="articleId" type="number" placeholder="canonical article id">
+    <button class="merge" onclick="loadDuplicates()">Load candidates</button>
+  </p>
+  <div id="candidates"></div>
+
+  <h2>Merge history</h2>
+  {% if merges %}
+  <table>
+    <thead>
+      <tr><th>Source</th><th>Target (canonical)</th><th>By</th><th>Votes moved</th><th>When</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for m in merges %}
+      <tr id="merge-{{ m.merge_id }}" class="{{ 'rolled-back' if not m.active }}">
+        <td>#{{ m.source_id }} {{ m.source_title }}</td>
+        <td>#{{ m.target_id }} {{ m.target_title }}</td>
+        <td>{{ m.merged_by or "system" }}</td>
+        <td>{{ m.vote_count_transferred }}</td>
+        <td>{{ m.merged_at }}</td>
+        <td>
+          {% if m.active %}
+          <button class="rollback" onclick="rollback({{ m.merge_id }})">Undo</button>
+          {% else %}
+          rolled back{% if m.rolled_back_by %} by {{ m.rolled_back_by }}{% endif %}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty">No merges recorded yet.</p>
+  {% endif %}
+
+  <script>
+    function adminToken() {
+      var token = sessionStorage.getItem("adminToken");
+      if (!token) {
+        token = window.prompt("Admin token:");
+        if (token) sessionStorage.setItem("adminToken", token);
+      }
+      return token;
+    }
+
+    function loadDuplicates() {
+      var token = adminToken();
+      if (!token) return;
+      var id = document.getElementById("articleId").value;
+      if (!id) return;
+      fetch("/api/admin/articles/" + id + "/potential-duplicates", {
+        headers: { "X-Admin-Token": token },
+      })
+        .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+        .then(function (data) { renderCandidates(id, data.candidates); })
+        .catch(function (status) {
+          if (status === 403) sessionStorage.removeItem("adminToken");
+          window.alert("Failed to load candidates (" + status + ").");
+        });
+    }
+
+    function renderCandidates(targetId, candidates) {
+      var box = document.getElementById("candidates");
+      if (!candidates.length) { box.innerHTML = "<p class='empty'>No near-duplicates found.</p>"; return; }
+      box.innerHTML = candidates.map(function (c) {
+        return "<div class='preview'><div class='card'>" +
+          "<strong>#" + c.id + " " + c.title + "</strong><br>" +
+          "source: " + c.source + " &middot; similarity: " + c.similarity + "<br>" +
+          "votes: " + c.vote_count + " &middot; comments: " + c.comment_count + "<br>" +
+          "<button class='merge' onclick='doMerge(" + c.id + "," + targetId + ")'>Merge into #" + targetId + "</button>" +
+          "</div></div>";
+      }).join("");
+    }
+
+    function doMerge(sourceId, targetId) {
+      var token = adminToken();
+      if (!token) return;
+      fetch("/api/admin/articles/" + sourceId + "/merge-into/" + targetId, {
+        method: "POST",
+        headers: { "X-Admin-Token": token },
+      })
+        .then(function (r) {
+          if (r.ok) { window.location.reload(); }
+          else {
+            if (r.status === 403) sessionStorage.removeItem("adminToken");
+            window.alert("Merge failed (" + r.status + ").");
+          }
+        });
+    }
+
+    function rollback(mergeId) {
+      var token = adminToken();
+      if (!token) return;
+      fetch("/api/admin/merges/" + mergeId + "/rollback", {
+        method: "POST",
+        headers: { "X-Admin-Token": token },
+      })
+        .then(function (r) {
+          if (r.ok) { window.location.reload(); }
+          else {
+            if (r.status === 403) sessionStorage.removeItem("adminToken");
+            window.alert("Rollback failed (" + r.status + ").");
+          }
+        });
+    }
+  </script>
+</body>
+</html>
