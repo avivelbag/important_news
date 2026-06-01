@@ -1,0 +1,7 @@
+# Development/test dependencies. Install with:
+#   pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+pytest>=8.0
+httpx>=0.27          # required by fastapi.testclient (starlette TestClient)
+beautifulsoup4>=4.12  # HTML assertions in the generate_site/docs tests
+pyyaml>=6.0          # parses .github/settings.yml in test_docs.py

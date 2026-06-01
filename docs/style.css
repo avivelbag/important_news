@@ -79,6 +79,10 @@ button.vote.voted { color: var(--accent); font-weight: bold; }
 a.title { color: #222; text-decoration: none; font-size: 0.95rem; }
 a.title:hover { text-decoration: underline; }
 .domain { color: var(--muted); font-size: 0.8rem; }
+.cred-badge { font-size: 0.7rem; padding: 0 0.35rem; border-radius: 0.6rem; margin-left: 0.3rem; vertical-align: middle; }
+.cred-verified { background: #1f7a3d; color: #fff; }
+.cred-community { background: #b9770e; color: #fff; }
+.cred-unverified { background: #555; color: #fff; }
 .meta { color: var(--muted); font-size: 0.78rem; }
 button.comments-toggle {
   border: none;

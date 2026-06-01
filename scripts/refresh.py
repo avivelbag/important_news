@@ -3,6 +3,12 @@ import logging
 import sys
 from pathlib import Path
 
+# Running this file as a script (``python scripts/refresh.py``) puts scripts/
+# on sys.path, not the repo root, so ``import src`` would fail. Add the repo
+# root explicitly so the script works whether invoked directly, via ``make``,
+# or in CI.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import src.db as db
 import src.generate_site as generate_site
 import src.scraper as scraper

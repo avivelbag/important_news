@@ -1,13 +1,17 @@
 .PHONY: refresh scrape site test
 
+# Prefer the project virtualenv if present, else fall back to python3 (e.g. CI,
+# where setup-python provides the interpreter and deps via requirements.txt).
+PYTHON := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
+
 refresh:
-	python scripts/refresh.py
+	$(PYTHON) scripts/refresh.py
 
 scrape:
-	python -m src.scraper
+	$(PYTHON) -m src.scraper
 
 site:
-	python -m src.generate_site
+	$(PYTHON) -m src.generate_site
 
 test:
-	python3 -m pytest tests/ -x --tb=short -q
+	$(PYTHON) -m pytest tests/ -x --tb=short -q

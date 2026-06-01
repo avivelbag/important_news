@@ -1,0 +1,8 @@
+# Runtime dependencies. SQLAlchemy 2.x is required — the code imports
+# `sqlalchemy.Engine`, which does not exist in 1.4.
+sqlalchemy>=2.0
+requests>=2.28
+# API server (src/api.py). fastapi pulls in starlette; jinja2 is needed for
+# its template rendering.
+fastapi>=0.110
+jinja2>=3.1
