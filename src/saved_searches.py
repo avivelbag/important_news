@@ -36,7 +36,6 @@ def _now() -> dt.datetime:
 
 
 def _clean_user(user_id: str) -> str:
-    """Return the stripped *user_id*, raising :class:`SavedSearchError` if empty."""
     name = (user_id or "").strip()
     if not name:
         raise SavedSearchError("user_id must not be empty")
@@ -44,7 +43,6 @@ def _clean_user(user_id: str) -> str:
 
 
 def _serialize(saved: SavedSearch) -> dict:
-    """Render a SavedSearch row into its JSON-friendly response shape."""
     return {
         "id": saved.id,
         "name": saved.name,

@@ -370,12 +370,9 @@ class ArticleTopic(Base):
 class SavedSearch(Base):
     """A user's stored search-filter preset, recallable from their preferences.
 
-    Users are identified by the same free-form ``user_id`` string used on Votes
-    and Bookmarks. ``query_params`` is the raw search query string (everything
-    after ``?`` on ``/api/search``, e.g. ``q=rocket&sources=hn&min_score=10``)
-    so a saved search round-trips back to a shareable URL without a schema
-    change when new filters are added. The ``(user_id, name)`` unique constraint
-    keeps preset names distinct per user (the upsert/dedup key).
+    ``query_params`` is the raw ``/api/search`` query string (everything after
+    ``?``) so a preset round-trips to a shareable URL and survives new filters
+    being added without a schema change. ``(user_id, name)`` is unique per user.
     """
 
     __tablename__ = "saved_searches"

@@ -2,14 +2,16 @@
 
 The Story model has no free-text *description* or *author* column, so search
 matches the title (high weight) plus the secondary ``source_name`` and
-``topic`` fields (low weight). Results are ordered by relevance score and then
-by recency, mirroring how the rest of the app ranks stories.
+``topic`` fields (low weight). Advanced refinement filters (source, topic,
+score, comment-count, date range) are pushed into the SQL ``WHERE`` clause so
+the database narrows rows on indexed columns before Python scores them for
+relevance and applies the final ordering.
 """
 
 import datetime as dt
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from src.models import Story
 
@@ -19,6 +21,10 @@ MAX_QUERY_LEN = 100
 # Allowed values for the ``sort`` filter, mapped to a human note in errors.
 SORT_MODES = ("relevance", "recent", "score")
 
+# Categories that a "both" story is considered a member of, so a topic filter
+# for "ai" or "aerospace" also matches cross-cutting stories.
+_BOTH_CATEGORIES = ("ai", "aerospace")
+
 # A title hit is worth more than a hit in a secondary field, so a story whose
 # title contains the query always outranks one that only mentions it in its
 # source name or topic.
@@ -27,7 +33,7 @@ _SECONDARY_WEIGHT = 1
 
 
 class SearchError(ValueError):
-    """Raised when a search query fails validation (too short/long/empty)."""
+    """Raised when a search query or filter value fails validation."""
 
 
 def validate_query(query: str) -> str:
@@ -48,15 +54,8 @@ def validate_query(query: str) -> str:
 
 @dataclass(frozen=True)
 class SearchFilters:
-    """Refinement filters layered on top of a keyword search.
-
-    Every field defaults to "no constraint" so an empty ``SearchFilters()`` is a
-    pure pass-through. ``sources`` and ``topics`` are matched as OR-sets (a story
-    passes if it matches any listed value); the remaining bounds are AND-combined
-    with each other and with the source/topic sets. ``sort`` selects the result
-    ordering and must be one of :data:`SORT_MODES`.
-    """
-
+    # ``sources``/``topics`` are OR-matched within each set; every other bound is
+    # AND-combined. An empty ``SearchFilters()`` is a pure pass-through.
     sources: frozenset[str] = field(default_factory=frozenset)
     topics: frozenset[str] = field(default_factory=frozenset)
     min_score: int | None = None
@@ -68,21 +67,12 @@ class SearchFilters:
 
 
 def _parse_csv(value: str | None) -> frozenset[str]:
-    """Split a comma-separated parameter into a lowercased set of tokens.
-
-    Empty/whitespace tokens are dropped, so ``"hn, ,Reddit"`` yields
-    ``{"hn", "reddit"}`` and ``None``/``""`` yields the empty set.
-    """
     if not value:
         return frozenset()
     return frozenset(part.strip().lower() for part in value.split(",") if part.strip())
 
 
 def _parse_int(value, name: str) -> int | None:
-    """Coerce *value* to an int, raising :class:`SearchError` on bad input.
-
-    ``None`` and empty strings pass through as ``None`` (no constraint).
-    """
     if value is None or value == "":
         return None
     try:
@@ -92,28 +82,20 @@ def _parse_int(value, name: str) -> int | None:
 
 
 def _parse_date(value, name: str, end_of_day: bool = False) -> dt.datetime | None:
-    """Parse an ISO-8601 date/datetime into a naive-UTC :class:`datetime`.
-
-    A bare ``YYYY-MM-DD`` is anchored to the start of that day, or the *end* of
-    the day (``23:59:59.999999``) when *end_of_day* is set, so an inclusive
-    ``date_to`` bound covers the whole calendar day. Timezone-aware inputs are
-    normalised to naive UTC to match how stories are compared. ``None``/empty
-    passes through; anything unparseable raises :class:`SearchError`.
-    """
     if value is None or value == "":
         return None
     if isinstance(value, dt.datetime):
         parsed = value
     else:
         try:
-            parsed = dt.datetime.fromisoformat(str(value))
-        except ValueError as exc:
+            parsed = dt.datetime.fromisoformat(value)
+        except (TypeError, ValueError) as exc:
             raise SearchError(f"{name} must be an ISO 8601 date") from exc
-        date_only = len(str(value)) == 10
+        # A bare YYYY-MM-DD carries no time component; treat an inclusive
+        # ``date_to`` bound as the very end of that calendar day.
+        date_only = isinstance(value, str) and "T" not in value and len(value) == 10
         if date_only and end_of_day:
-            parsed = parsed.replace(
-                hour=23, minute=59, second=59, microsecond=999999
-            )
+            parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
     return parsed
@@ -150,43 +132,42 @@ def build_filters(
     )
 
 
-def _passes_filters(story: Story, filters: SearchFilters) -> bool:
-    """Return whether *story* satisfies every constraint in *filters*.
+def _topic_values(categories) -> set[str]:
+    # Expand the requested categories into the concrete ``Story.topic`` values
+    # that satisfy them: a "both" story counts for "ai" and "aerospace".
+    values = set(categories)
+    if values & set(_BOTH_CATEGORIES):
+        values.add("both")
+    return values
 
-    Source and topic sets are OR-matched (membership in the listed values);
-    score, comment-count and date bounds are inclusive AND constraints. A story
-    with no ``raw_score``/``comment_count`` still compares correctly because
-    those columns default to 0.
-    """
-    if filters.sources and story.source_name.lower() not in filters.sources:
-        return False
-    if filters.topics and not any(
-        _category_matches(story.topic, topic) for topic in filters.topics
-    ):
-        return False
-    if filters.min_score is not None and story.raw_score < filters.min_score:
-        return False
-    if filters.max_score is not None and story.raw_score > filters.max_score:
-        return False
-    if filters.min_comments is not None and story.comment_count < filters.min_comments:
-        return False
-    if filters.date_from is not None or filters.date_to is not None:
-        published = _published_key(story)
-        if filters.date_from is not None and published < filters.date_from:
-            return False
-        if filters.date_to is not None and published > filters.date_to:
-            return False
-    return True
+
+def _filter_clauses(filters: SearchFilters, category: str | None):
+    # SQLAlchemy column predicates pushed into the WHERE clause so the database
+    # filters on indexed columns before any row reaches Python.
+    clauses = []
+    if filters.sources:
+        clauses.append(func.lower(Story.source_name).in_(filters.sources))
+    if filters.topics:
+        clauses.append(Story.topic.in_(_topic_values(filters.topics)))
+    if category is not None:
+        clauses.append(Story.topic.in_(_topic_values({category})))
+    if filters.min_score is not None:
+        clauses.append(Story.raw_score >= filters.min_score)
+    if filters.max_score is not None:
+        clauses.append(Story.raw_score <= filters.max_score)
+    if filters.min_comments is not None:
+        clauses.append(Story.comment_count >= filters.min_comments)
+    if filters.date_from is not None:
+        clauses.append(Story.published_at >= filters.date_from)
+    if filters.date_to is not None:
+        clauses.append(Story.published_at <= filters.date_to)
+    return clauses
 
 
 def _sort_key(sort: str):
-    """Return a ``(key_func, reverse)`` pair for the requested *sort* mode.
-
-    Each key operates on a ``(relevance_score, story)`` pair. ``relevance`` keeps
-    the existing score→recency→votes ordering; ``recent`` orders purely by
-    publication date; ``score`` orders by the story's own ``raw_score``. All
-    modes fall back to recency to keep ties stable.
-    """
+    # Each key operates on a ``(relevance_score, story)`` pair; all modes fall
+    # back to recency to keep ties stable. ``relevance`` keeps the existing
+    # score→recency→votes ordering.
     if sort == "recent":
         return (lambda pair: (_published_key(pair[1]), pair[0]), True)
     if sort == "score":
@@ -198,21 +179,6 @@ def _sort_key(sort: str):
         lambda pair: (pair[0], _published_key(pair[1]), pair[1].vote_count),
         True,
     )
-
-
-def _category_matches(topic: str, category: str | None) -> bool:
-    """Return whether *topic* belongs to the requested *category*.
-
-    ``None`` means no filter. A "both" story counts as both "ai" and
-    "aerospace", matching the semantics used by the static-site filter JS.
-    """
-    if category is None:
-        return True
-    if topic == category:
-        return True
-    if topic == "both" and category in ("ai", "aerospace"):
-        return True
-    return False
 
 
 def score_story(story: Story, terms: list[str]) -> int:
@@ -234,7 +200,6 @@ def score_story(story: Story, terms: list[str]) -> int:
 
 
 def _serialize(story: Story, score: int) -> dict:
-    """Render a Story into the JSON-friendly search-result shape."""
     return {
         "id": story.id,
         "title": story.title,
@@ -274,22 +239,22 @@ def search_stories(
     *category* is the legacy single-topic filter kept for backwards
     compatibility; *filters* (a :class:`SearchFilters`) layers the advanced
     source/topic/score/comment-count/date constraints on top and may be combined
-    with *category*. Matching is a case-insensitive substring test on each
-    whitespace-separated term; only stories with a non-zero score that also pass
-    every active filter are returned.
+    with *category*. All such constraints are applied as SQL ``WHERE`` clauses on
+    indexed columns; only the relevance scoring and final ordering run in Python.
+    Matching is a case-insensitive substring test on each whitespace-separated
+    term; only stories with a non-zero score are returned.
     """
     trimmed = validate_query(query)
     terms = [t for t in trimmed.lower().split() if t]
     if filters is None:
         filters = SearchFilters()
 
-    stories = session.scalars(select(Story)).all()
+    stmt = select(Story)
+    for clause in _filter_clauses(filters, category):
+        stmt = stmt.where(clause)
+
     scored = []
-    for story in stories:
-        if not _category_matches(story.topic, category):
-            continue
-        if not _passes_filters(story, filters):
-            continue
+    for story in session.scalars(stmt).all():
         score = score_story(story, terms)
         if score > 0:
             scored.append((score, story))

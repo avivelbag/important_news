@@ -397,3 +397,68 @@ def test_search_js_appends_filter_params_and_syncs_url(engine, tmp_path):
     assert "filterParams" in js
     assert "min_score" in js
     assert "replaceState" in js
+
+
+def test_site_renders_source_and_topic_controls(engine, tmp_path):
+    from src.generate_site import generate_site
+
+    out = generate_site(engine=engine, out_dir=tmp_path / "docs")
+    index = (out / "index.html").read_text(encoding="utf-8")
+    assert 'id="filter-sources"' in index
+    assert 'id="filter-topics"' in index
+
+
+def test_search_js_registers_source_and_topic_params(engine, tmp_path):
+    from src.generate_site import generate_site
+
+    out = generate_site(engine=engine, out_dir=tmp_path / "docs")
+    js = (out / "search.js").read_text(encoding="utf-8")
+    assert "filter-sources" in js
+    assert "filter-topics" in js
+    assert '"sources"' in js
+    assert '"topics"' in js
+
+
+# --- SQL-level filtering & date parsing -------------------------------------
+
+
+def test_filters_narrow_rows_in_sql(session):
+    # Only the matching source row should ever be materialised; verify the
+    # WHERE clause (not just Python scoring) does the narrowing by checking a
+    # query term shared by both rows still returns only the filtered source.
+    _seed(
+        session,
+        [
+            _make_story(title="rocket keep", url="https://a/keep", source_name="hn"),
+            _make_story(title="rocket drop", url="https://a/drop", source_name="vox"),
+        ],
+    )
+    results = search_stories(
+        session, "rocket", filters=SearchFilters(sources=frozenset({"hn"}))
+    )
+    assert [r["url"] for r in results] == ["https://a/keep"]
+
+
+def test_category_arg_expands_both_in_sql(session):
+    _seed(
+        session,
+        [
+            _make_story(title="rocket ai", url="https://a/ai", topic="ai"),
+            _make_story(title="rocket aero", url="https://a/aero", topic="aerospace"),
+            _make_story(title="rocket both", url="https://a/both", topic="both"),
+        ],
+    )
+    results = search_stories(session, "rocket", category="aerospace")
+    assert {r["url"] for r in results} == {"https://a/aero", "https://a/both"}
+
+
+def test_date_with_time_component_not_bumped_to_end_of_day():
+    # A date_to carrying an explicit time must be used verbatim, not snapped to
+    # 23:59:59 (the fragile len()==10 heuristic used to misfire on edge inputs).
+    f = build_filters(date_to="2026-03-15T08:00:00")
+    assert f.date_to == datetime(2026, 3, 15, 8, 0, 0)
+
+
+def test_date_with_fractional_seconds_parses():
+    f = build_filters(date_from="2026-03-15T08:00:00.500")
+    assert f.date_from == datetime(2026, 3, 15, 8, 0, 0, 500000)

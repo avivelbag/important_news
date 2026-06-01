@@ -271,6 +271,12 @@ def render_html(
         'placeholder="Search stories…" minlength="2" maxlength="100" '
         'aria-label="Search stories">\n'
         '      <div class="search-filters" id="search-filters">\n'
+        '        <label>Sources <input type="text" id="filter-sources" '
+        'name="sources" placeholder="e.g. Hacker News, Reddit" '
+        'aria-label="Filter by sources (comma-separated)"></label>\n'
+        '        <label>Topics <input type="text" id="filter-topics" '
+        'name="topics" placeholder="e.g. ai, aerospace" '
+        'aria-label="Filter by topics (comma-separated)"></label>\n'
         '        <label>Min score <input type="number" id="filter-min-score" '
         'name="min_score" min="0" step="1" aria-label="Minimum score"></label>\n'
         '        <label>Min comments <input type="number" id="filter-min-comments" '
@@ -579,10 +585,11 @@ def render_search_js() -> str:
         "  }\n"
         "\n"
         "  // Optional advanced-filter controls; absent on pages without them.\n"
-        '  var FILTER_IDS = ["filter-min-score", "filter-min-comments",\n'
+        '  var FILTER_IDS = ["filter-sources", "filter-topics",\n'
+        '    "filter-min-score", "filter-min-comments",\n'
         '    "filter-date-from", "filter-date-to", "filter-sort"];\n'
-        '  var FILTER_PARAMS = ["min_score", "min_comments", "date_from",\n'
-        '    "date_to", "sort"];\n'
+        '  var FILTER_PARAMS = ["sources", "topics", "min_score",\n'
+        '    "min_comments", "date_from", "date_to", "sort"];\n'
         "\n"
         "  function filterParams() {\n"
         '    var out = "";\n'
