@@ -43,7 +43,13 @@ from src.recommendation import (
     personalized_feed,
     set_preferences,
 )
-from src.search import SearchError, search_stories
+from src.saved_searches import (
+    SavedSearchError,
+    create_saved_search,
+    delete_saved_search,
+    list_saved_searches,
+)
+from src.search import SearchError, build_filters, search_stories
 from src.source_health import health_dashboard
 from src.submissions import (
     SubmissionError,
@@ -91,18 +97,108 @@ def _session():
 def api_search(
     q: str = Query(..., description="search query, 2-100 chars"),
     category: str | None = Query(None, description="optional topic filter"),
+    sources: str | None = Query(None, description="comma-separated source names"),
+    topics: str | None = Query(None, description="comma-separated topic slugs"),
+    min_score: int | None = Query(None, description="minimum story score"),
+    max_score: int | None = Query(None, description="maximum story score"),
+    min_comments: int | None = Query(None, description="minimum comment count"),
+    date_from: str | None = Query(None, description="ISO 8601 earliest date"),
+    date_to: str | None = Query(None, description="ISO 8601 latest date"),
+    sort: str = Query("relevance", description="relevance | recent | score"),
 ) -> list[dict]:
-    """Return search results for *q*, optionally filtered by *category*.
+    """Return search results for *q*, refined by the advanced filter params.
 
-    Responds 400 when the query fails length validation; otherwise a JSON array
-    of ``{id, title, description, url, source, date, score}`` objects ordered by
-    relevance then recency.
+    The optional filters (``sources``, ``topics``, ``min_score``/``max_score``,
+    ``min_comments``, ``date_from``/``date_to``, ``sort``) are AND-combined and
+    encoded entirely in the query string, so a filtered search is shareable by
+    URL. Responds 400 when the query fails length validation or any filter value
+    is malformed; otherwise a JSON array of ``{id, title, description, url,
+    source, date, score}`` objects ordered per ``sort``.
     """
     session = _session()
     try:
-        return search_stories(session, q, category)
+        filters = build_filters(
+            sources=sources,
+            topics=topics,
+            min_score=min_score,
+            max_score=max_score,
+            min_comments=min_comments,
+            date_from=date_from,
+            date_to=date_to,
+            sort=sort,
+        )
+        return search_stories(session, q, category, filters=filters)
     except SearchError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/user/saved-searches")
+def api_create_saved_search(
+    payload: dict = Body(...),
+    voter_id: str | None = Cookie(default=None),
+) -> JSONResponse:
+    """Store the caller's named search-filter preset and return it.
+
+    Identifies the user by the ``voter_id`` cookie (minting one on first use,
+    set on the response). Expects ``name`` and ``query_params`` in the JSON body;
+    responds 400 for missing/duplicate/over-long input.
+    """
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+
+    session = _session()
+    try:
+        saved = create_saved_search(
+            session,
+            voter_id,
+            payload.get("name"),
+            payload.get("query_params"),
+        )
+    except SavedSearchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+    response = JSONResponse(saved, status_code=201)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.get("/api/user/saved-searches")
+def api_list_saved_searches(
+    voter_id: str | None = Cookie(default=None),
+) -> list[dict]:
+    """Return the caller's saved searches (newest first); empty list if none."""
+    if voter_id is None:
+        return []
+    session = _session()
+    try:
+        return list_saved_searches(session, voter_id)
+    except SavedSearchError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.delete("/api/user/saved-searches/{saved_id}")
+def api_delete_saved_search(
+    saved_id: int,
+    voter_id: str | None = Cookie(default=None),
+) -> dict:
+    """Delete one of the caller's saved searches; 404 if it is not theirs."""
+    if voter_id is None:
+        raise HTTPException(status_code=404, detail="saved search not found")
+    session = _session()
+    try:
+        delete_saved_search(session, voter_id, saved_id)
+        return {"deleted": saved_id}
+    except SavedSearchError as exc:
+        status = 404 if exc.not_found else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
     finally:
         session.close()
 

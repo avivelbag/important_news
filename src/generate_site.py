@@ -270,6 +270,29 @@ def render_html(
         '      <input type="search" id="search-box" name="q" '
         'placeholder="Search stories…" minlength="2" maxlength="100" '
         'aria-label="Search stories">\n'
+        '      <div class="search-filters" id="search-filters">\n'
+        '        <label>Sources <input type="text" id="filter-sources" '
+        'name="sources" placeholder="e.g. Hacker News, Reddit" '
+        'aria-label="Filter by sources (comma-separated)"></label>\n'
+        '        <label>Topics <input type="text" id="filter-topics" '
+        'name="topics" placeholder="e.g. ai, aerospace" '
+        'aria-label="Filter by topics (comma-separated)"></label>\n'
+        '        <label>Min score <input type="number" id="filter-min-score" '
+        'name="min_score" min="0" step="1" aria-label="Minimum score"></label>\n'
+        '        <label>Min comments <input type="number" id="filter-min-comments" '
+        'name="min_comments" min="0" step="1" aria-label="Minimum comments"></label>\n'
+        '        <label>From <input type="date" id="filter-date-from" '
+        'name="date_from" aria-label="From date"></label>\n'
+        '        <label>To <input type="date" id="filter-date-to" '
+        'name="date_to" aria-label="To date"></label>\n'
+        '        <label>Sort <select id="filter-sort" name="sort" '
+        'aria-label="Sort results">\n'
+        '          <option value="relevance">Relevance</option>\n'
+        '          <option value="recent">Most recent</option>\n'
+        '          <option value="score">Highest score</option>\n'
+        "        </select></label>\n"
+        '        <button type="button" id="filter-clear">Clear filters</button>\n'
+        "      </div>\n"
         '      <div id="search-results" class="search-results" hidden></div>\n'
         "    </form>\n"
         f'    <nav class="filters">\n{nav}\n    </nav>\n'
@@ -593,6 +616,30 @@ def render_search_js() -> str:
         '    return f && f !== "all" ? f : null;\n'
         "  }\n"
         "\n"
+        "  // Optional advanced-filter controls; absent on pages without them.\n"
+        '  var FILTER_IDS = ["filter-sources", "filter-topics",\n'
+        '    "filter-min-score", "filter-min-comments",\n'
+        '    "filter-date-from", "filter-date-to", "filter-sort"];\n'
+        '  var FILTER_PARAMS = ["sources", "topics", "min_score",\n'
+        '    "min_comments", "date_from", "date_to", "sort"];\n'
+        "\n"
+        "  function filterParams() {\n"
+        '    var out = "";\n'
+        "    for (var i = 0; i < FILTER_IDS.length; i++) {\n"
+        "      var el = document.getElementById(FILTER_IDS[i]);\n"
+        '      if (!el) continue;\n'
+        "      var v = el.value.trim();\n"
+        '      if (!v || v === "relevance") continue;\n'
+        '      out += "&" + FILTER_PARAMS[i] + "=" + encodeURIComponent(v);\n'
+        "    }\n"
+        "    return out;\n"
+        "  }\n"
+        "\n"
+        "  function syncUrl(query) {\n"
+        "    if (!window.history || !window.history.replaceState) return;\n"
+        '    window.history.replaceState(null, "", "?" + query);\n'
+        "  }\n"
+        "\n"
         "  function render(results) {\n"
         "    if (!results.length) {\n"
         '      panel.innerHTML = \'<p class="search-empty">No results</p>\';\n'
@@ -624,10 +671,29 @@ def render_search_js() -> str:
         '    var url = "/api/search?q=" + encodeURIComponent(q);\n'
         "    var cat = activeCategory();\n"
         '    if (cat) url += "&category=" + encodeURIComponent(cat);\n'
+        "    url += filterParams();\n"
+        '    syncUrl(url.slice(url.indexOf("?") + 1));\n'
         "    fetch(url)\n"
         "      .then(function (resp) { return resp.ok ? resp.json() : []; })\n"
         "      .then(render)\n"
         "      .catch(function () { panel.hidden = true; });\n"
+        "  }\n"
+        "\n"
+        '  var clear = document.getElementById("filter-clear");\n'
+        "  if (clear) {\n"
+        '    clear.addEventListener("click", function () {\n'
+        "      for (var i = 0; i < FILTER_IDS.length; i++) {\n"
+        "        var el = document.getElementById(FILTER_IDS[i]);\n"
+        '        if (!el) continue;\n'
+        '        if (el.tagName === "SELECT") { el.value = "relevance"; }\n'
+        '        else { el.value = ""; }\n'
+        "      }\n"
+        "      run();\n"
+        "    });\n"
+        "  }\n"
+        "  for (var fi = 0; fi < FILTER_IDS.length; fi++) {\n"
+        "    var fel = document.getElementById(FILTER_IDS[fi]);\n"
+        '    if (fel) fel.addEventListener("change", run);\n'
         "  }\n"
         "\n"
         '  box.addEventListener("input", function () {\n'
