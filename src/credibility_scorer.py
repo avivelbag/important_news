@@ -1,25 +1,9 @@
-"""Source credibility scoring: blend observed signals into a 0-100 score.
-
-A source's credibility is a single 0-100 number used by ranking and search to
-weight that source's stories. It blends three observable signals:
-
-* **Vote ratio** — upvotes / total votes across the source's stories. A source
-  whose stories the community consistently upvotes is more trustworthy; heavy
-  downvoting is a negative signal.
-* **Domain authority** — whether the source's domain is in a curated list of
-  established tech publications, research institutions, and official outlets.
-* **Content freshness** — sources that keep publishing recent content score
-  higher than ones that have gone quiet.
-
-A moderator can pin the score with a manual override that wins over the
-computed value; the override and its reason are persisted on the
-``SourceCredibility`` row and audited via a ``ModerationAction`` entry.
-"""
+"""Source credibility scoring: blend vote ratio, domain authority, and freshness."""
 
 import datetime as dt
 from urllib.parse import urlparse
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 import src.db as db
 import src.models as models
@@ -80,12 +64,6 @@ def _naive_utc(value: dt.datetime) -> dt.datetime:
 
 
 def extract_domain(url: str | None) -> str:
-    """Return the lowercased registrable host of *url*, ``www.`` stripped.
-
-    Falls back to treating the whole string as a host when it has no scheme, so
-    both ``"https://www.nasa.gov/x"`` and ``"nasa.gov"`` resolve to
-    ``"nasa.gov"``. Returns ``""`` for empty/None input.
-    """
     if not url:
         return ""
     parsed = urlparse(url if "//" in url else f"//{url}")
@@ -96,11 +74,6 @@ def extract_domain(url: str | None) -> str:
 
 
 def domain_authority(url: str | None) -> float:
-    """Return the curated authority (0-100) for *url*'s domain.
-
-    Matching is suffix-based so a subdomain inherits its parent's authority.
-    Unknown domains get ``_UNKNOWN_DOMAIN_AUTHORITY``.
-    """
     host = extract_domain(url)
     if not host:
         return _UNKNOWN_DOMAIN_AUTHORITY
@@ -111,11 +84,8 @@ def domain_authority(url: str | None) -> float:
 
 
 def vote_ratio(upvotes: int, total_votes: int) -> float:
-    """Return upvotes / total votes in [0, 1]; neutral 0.5 when no votes cast.
-
-    A source with no votes yet is neither endorsed nor rejected, so it gets the
-    neutral midpoint rather than 0 (which would unfairly punish new sources).
-    """
+    # A source with no votes yet is neither endorsed nor rejected, so it gets the
+    # neutral midpoint rather than 0 (which would unfairly punish new sources).
     if total_votes <= 0:
         return 0.5
     ratio = upvotes / total_votes
@@ -125,11 +95,6 @@ def vote_ratio(upvotes: int, total_votes: int) -> float:
 def freshness_score(
     last_published: dt.datetime | None, now: dt.datetime
 ) -> float:
-    """Return a 0-100 freshness score that decays linearly with staleness.
-
-    A source whose newest story is ``now`` scores 100; one whose newest story is
-    ``_FRESHNESS_HORIZON_DAYS`` old (or older, or has no stories) scores 0.
-    """
     if last_published is None:
         return 0.0
     age_days = (_naive_utc(now) - _naive_utc(last_published)).total_seconds() / 86400.0
@@ -148,11 +113,6 @@ def compute_credibility(
     last_published: dt.datetime | None,
     now: dt.datetime,
 ) -> float:
-    """Blend the three signals into a single 0-100 credibility score.
-
-    The vote ratio is scaled to 0-100 and combined with domain authority and
-    freshness via the fixed ``_W_*`` weights. The result is clamped to [0, 100].
-    """
     vote_component = vote_ratio(upvotes, total_votes) * 100.0
     domain_component = domain_authority(url)
     fresh_component = freshness_score(last_published, now)
@@ -165,23 +125,17 @@ def compute_credibility(
 
 
 def credibility_multiplier(score: float) -> float:
-    """Map a 0-100 credibility score to a ranking multiplier in [0.5, 1.5].
-
-    A neutral score of 50 yields 1.0 (no effect), a fully verified source 1.5,
-    and a zero-credibility source 0.5 — so high-credibility stories surface
-    earlier and low-credibility ones are demoted without being hidden.
-    """
+    # 50 -> 1.0 (no effect), 100 -> 1.5, 0 -> 0.5: high credibility surfaces
+    # earlier, low credibility is demoted without being hidden.
     clamped = min(100.0, max(0.0, score))
     return 0.5 + clamped / 100.0
 
 
 def weight_by_credibility(base_score: float, cred_score: float) -> float:
-    """Scale a story's base ranking score by its source credibility multiplier."""
     return base_score * credibility_multiplier(cred_score)
 
 
 def credibility_tier(score: float) -> str:
-    """Map an effective credibility score to its human-facing tier bucket."""
     if score >= VERIFIED_THRESHOLD:
         return TIER_VERIFIED
     if score >= COMMUNITY_THRESHOLD:
@@ -190,23 +144,18 @@ def credibility_tier(score: float) -> str:
 
 
 def credibility_badge(score: float) -> str:
-    """Return the badge label ("Verified Source", etc.) for a score."""
     return _TIER_BADGES[credibility_tier(score)]
 
 
 def effective_score(cred: models.SourceCredibility) -> float:
-    """Return the score in effect: the manual override if set, else computed."""
     if cred.manual_override is not None:
         return cred.manual_override
     return cred.score
 
 
-def _source_vote_totals(session, source_id: int) -> tuple[int, int]:
+def _vote_totals(stories) -> tuple[int, int]:
     # Derived from denormalised Story.vote_count (net = up - down) and
     # Story.downvotes (count of -1): upvotes = net + down, total = up + down.
-    stories = session.scalars(
-        select(models.Story).filter_by(source_id=source_id)
-    ).all()
     downvotes = sum(s.downvotes or 0 for s in stories)
     net = sum(s.vote_count or 0 for s in stories)
     upvotes = net + downvotes
@@ -214,16 +163,7 @@ def _source_vote_totals(session, source_id: int) -> tuple[int, int]:
     return max(0, upvotes), max(0, total)
 
 
-def _source_last_published(session, source_id: int) -> dt.datetime | None:
-    return (
-        session.query(func.max(models.Story.published_at))
-        .filter_by(source_id=source_id)
-        .scalar()
-    )
-
-
 def get_or_create_credibility(session, source_id: int) -> models.SourceCredibility:
-    """Return the source's credibility row, creating a default one if missing."""
     cred = (
         session.query(models.SourceCredibility)
         .filter_by(source_id=source_id)
@@ -236,18 +176,49 @@ def get_or_create_credibility(session, source_id: int) -> models.SourceCredibili
     return cred
 
 
+def get_or_create_stats(session, source_id: int) -> models.SourceStats:
+    stats = (
+        session.query(models.SourceStats)
+        .filter_by(source_id=source_id)
+        .one_or_none()
+    )
+    if stats is None:
+        stats = models.SourceStats(source_id=source_id)
+        session.add(stats)
+        session.flush()
+    return stats
+
+
+def _refresh_stats(session, source_id: int, stories, now: dt.datetime) -> None:
+    stats = get_or_create_stats(session, source_id)
+    count = len(stories)
+    stats.article_count = count
+    stats.avg_votes = (
+        sum(s.vote_count or 0 for s in stories) / count if count else 0.0
+    )
+    stats.avg_comments = (
+        sum(s.comment_count or 0 for s in stories) / count if count else 0.0
+    )
+    published = [s.published_at for s in stories if s.published_at is not None]
+    stats.established_date = min(published) if published else None
+    stats.updated_at = _naive_utc(now)
+
+
 def recompute_source(
     session, source: models.Source, now: dt.datetime
 ) -> models.SourceCredibility:
-    """Recompute and persist one source's credibility from its observed signals.
-
-    A manual override is preserved (the computed ``score`` is still refreshed so
-    the override can be cleared later and reveal an up-to-date value), but the
-    persisted ``tier``/``is_verified`` reflect the *effective* score so badges
-    honour the override.
-    """
-    upvotes, total = _source_vote_totals(session, source.id)
-    last_published = _source_last_published(session, source.id)
+    # The manual override is preserved (the computed ``score`` is still refreshed
+    # so a later clear reveals an up-to-date value), but the persisted
+    # tier/is_verified and the denormalised Story.credibility_score reflect the
+    # *effective* score so badges and ranking honour the override.
+    stories = session.scalars(
+        select(models.Story).filter_by(source_id=source.id)
+    ).all()
+    upvotes, total = _vote_totals(stories)
+    last_published = max(
+        (s.published_at for s in stories if s.published_at is not None),
+        default=None,
+    )
     score = compute_credibility(
         upvotes=upvotes,
         total_votes=total,
@@ -262,6 +233,9 @@ def recompute_source(
     eff = effective_score(cred)
     cred.tier = credibility_tier(eff)
     cred.is_verified = cred.tier == TIER_VERIFIED
+    for story in stories:
+        story.credibility_score = eff
+    _refresh_stats(session, source.id, stories, now)
     session.flush()
     return cred
 
@@ -290,13 +264,7 @@ def set_manual_override(
     reason: str,
     now: dt.datetime,
 ) -> models.SourceCredibility:
-    """Pin (or clear) a source's credibility score and write an audit row.
-
-    Passing ``score=None`` clears the override and reverts to the computed
-    value. Any other value is clamped to [0, 100]. Every change appends a
-    ``ModerationAction`` (content_type ``"source"``) so the override history is
-    permanently reconstructable, mirroring the content-moderation audit trail.
-    """
+    """Pin (``score``) or clear (``score=None``) a source's score and audit it."""
     cred = get_or_create_credibility(session, source_id)
     if score is None:
         cred.manual_override = None
@@ -323,3 +291,45 @@ def set_manual_override(
     )
     session.flush()
     return cred
+
+
+def credibility_report(session, source_id: int) -> dict | None:
+    """Return a source's credibility + stats summary, or None if it doesn't exist."""
+    source = session.get(models.Source, source_id)
+    if source is None:
+        return None
+    cred = get_or_create_credibility(session, source_id)
+    stats = get_or_create_stats(session, source_id)
+    eff = effective_score(cred)
+    return {
+        "source_id": source_id,
+        "name": source.name,
+        "url": source.url,
+        "score": cred.score,
+        "effective_score": eff,
+        "manual_override": cred.manual_override,
+        "vote_ratio": cred.vote_ratio,
+        "is_verified": cred.is_verified,
+        "tier": credibility_tier(eff),
+        "badge": credibility_badge(eff),
+        "reason": cred.reason,
+        "updated_at": cred.updated_at.isoformat() if cred.updated_at else None,
+        "stats": {
+            "article_count": stats.article_count,
+            "avg_votes": stats.avg_votes,
+            "avg_comments": stats.avg_comments,
+            "established_date": (
+                stats.established_date.isoformat()
+                if stats.established_date
+                else None
+            ),
+        },
+    }
+
+
+def list_source_credibility(session, limit: int = 200) -> list[dict]:
+    """Return every source's credibility report, highest effective score first."""
+    sources = session.scalars(select(models.Source)).all()
+    rows = [credibility_report(session, source.id) for source in sources]
+    rows.sort(key=lambda r: r["effective_score"], reverse=True)
+    return rows[:limit]

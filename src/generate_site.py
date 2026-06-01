@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy import Engine, select
 
+from src.credibility_scorer import credibility_badge, credibility_tier
 from src.db import get_engine, get_session
 from src.discussions import get_discussions
 from src.models import Story
@@ -170,6 +171,12 @@ def render_story(story: Story, index: int, discussions: list[dict] | None = None
         sources_html = "via " + ", ".join(escape(s) for s in sources)
     else:
         sources_html = escape(sources[0])
+    cred = story.credibility_score if story.credibility_score is not None else 50.0
+    cred_tier = credibility_tier(cred)
+    cred_badge_html = (
+        f' <span class="cred-badge cred-{cred_tier}">'
+        f"{escape(credibility_badge(cred))}</span>"
+    )
     story_attr = escape(str(story.id), quote=True) if story.id is not None else ""
     comment_count = story.comment_count or 0
     comments_label = "1 comment" if comment_count == 1 else f"{comment_count} comments"
@@ -193,7 +200,7 @@ def render_story(story: Story, index: int, discussions: list[dict] | None = None
         "      </span>\n"
         '      <span class="story-main">\n'
         f'        <a class="title" href="{escape(story.url, quote=True)}">'
-        f"{escape(story.title)}</a>{domain_html}\n"
+        f"{escape(story.title)}</a>{domain_html}{cred_badge_html}\n"
         '        <span class="meta">'
         f'<span class="points">{points} points</span>{downvotes_html} '
         f"&middot; {sources_html}{submitter_html} "
@@ -418,6 +425,11 @@ def render_css() -> str:
         "a.title { color: #222; text-decoration: none; font-size: 0.95rem; }\n"
         "a.title:hover { text-decoration: underline; }\n"
         ".domain { color: var(--muted); font-size: 0.8rem; }\n"
+        ".cred-badge { font-size: 0.7rem; padding: 0 0.35rem; border-radius: "
+        "0.6rem; margin-left: 0.3rem; vertical-align: middle; }\n"
+        ".cred-verified { background: #1f7a3d; color: #fff; }\n"
+        ".cred-community { background: #b9770e; color: #fff; }\n"
+        ".cred-unverified { background: #555; color: #fff; }\n"
         ".meta { color: var(--muted); font-size: 0.78rem; }\n"
         "button.comments-toggle {\n"
         "  border: none;\n"

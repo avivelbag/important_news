@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy import func, select
 
+from src.credibility_scorer import credibility_badge
 from src.models import Story
 
 MIN_QUERY_LEN = 2
@@ -175,8 +176,15 @@ def _sort_key(sort: str):
             lambda pair: (pair[1].raw_score, _published_key(pair[1]), pair[0]),
             True,
         )
+    # Relevance ties break on source credibility first (so high-trust sources
+    # surface earlier), then recency, then votes.
     return (
-        lambda pair: (pair[0], _published_key(pair[1]), pair[1].vote_count),
+        lambda pair: (
+            pair[0],
+            _credibility_key(pair[1]),
+            _published_key(pair[1]),
+            pair[1].vote_count,
+        ),
         True,
     )
 
@@ -199,7 +207,12 @@ def score_story(story: Story, terms: list[str]) -> int:
     return score
 
 
+def _credibility_key(story: Story) -> float:
+    return story.credibility_score if story.credibility_score is not None else 50.0
+
+
 def _serialize(story: Story, score: int) -> dict:
+    cred = _credibility_key(story)
     return {
         "id": story.id,
         "title": story.title,
@@ -209,6 +222,8 @@ def _serialize(story: Story, score: int) -> dict:
         "source": story.source_name,
         "date": story.published_at.isoformat() if story.published_at else None,
         "score": score,
+        "credibility_score": cred,
+        "credibility_badge": credibility_badge(cred),
     }
 
 

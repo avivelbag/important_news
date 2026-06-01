@@ -4,6 +4,7 @@ import os
 
 from sqlalchemy import select
 
+import src.credibility_scorer as credibility
 import src.db as db
 import src.models as models
 
@@ -93,14 +94,28 @@ def recompute_scores(engine, now: dt.datetime | None = None, weights=None) -> in
         weights = ScoreWeights.from_env()
     session = db.get_session(engine)
     try:
-        quality_by_name = {
-            source.name: source.quality_weight
-            for source in session.scalars(select(models.Source)).all()
+        sources = session.scalars(select(models.Source)).all()
+        quality_by_name = {source.name: source.quality_weight for source in sources}
+        # Source credibility surfaces high-trust outlets earlier: the base score
+        # is scaled by the source's credibility multiplier so a verified source
+        # outranks a comparable story from an unverified blog.
+        creds = {
+            cred.source_id: credibility.effective_score(cred)
+            for cred in session.scalars(select(models.SourceCredibility)).all()
+        }
+        cred_by_name = {
+            source.name: creds[source.id]
+            for source in sources
+            if source.id in creds
         }
         stories = list(session.scalars(select(models.Story)).all())
         for story in stories:
             quality_weight = quality_by_name.get(story.source_name, 1.0)
-            story.computed_score = compute_score(story, quality_weight, now, weights)
+            score = compute_score(story, quality_weight, now, weights)
+            cred_score = cred_by_name.get(story.source_name)
+            if cred_score is not None:
+                score = credibility.weight_by_credibility(score, cred_score)
+            story.computed_score = score
         session.commit()
         return len(stories)
     finally:

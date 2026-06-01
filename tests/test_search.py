@@ -177,6 +177,8 @@ def test_result_has_full_contract_shape(session):
         "source",
         "date",
         "score",
+        "credibility_score",
+        "credibility_badge",
     }
     # SQLite stores naive datetimes, so the ISO string carries no tz offset.
     assert result["date"] == "2026-01-02T03:04:00"
