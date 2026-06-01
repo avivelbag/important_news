@@ -37,6 +37,12 @@ from src.profiles import (
     leaderboard,
     set_private,
 )
+from src.recommendation import (
+    RecommendationError,
+    get_preferences,
+    personalized_feed,
+    set_preferences,
+)
 from src.search import SearchError, search_stories
 from src.source_health import health_dashboard
 from src.submissions import (
@@ -813,6 +819,85 @@ def api_unfollow_topic(
         raise HTTPException(status_code=_topic_status(exc), detail=str(exc)) from exc
     finally:
         session.close()
+
+
+@app.get("/api/user/feed")
+def api_user_feed(
+    voter_id: str | None = Cookie(default=None),
+    algorithm: str | None = Query(
+        None, description="balanced | trending | recent | followed"
+    ),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+) -> dict:
+    # Anonymous callers get user_id None so the homepage falls back to global.
+    if voter_id is None:
+        return {
+            "user_id": None,
+            "algorithm": algorithm or "balanced",
+            "limit": limit,
+            "offset": offset,
+            "total": 0,
+            "stories": [],
+        }
+    session = _session()
+    try:
+        return personalized_feed(
+            session, voter_id, algorithm=algorithm, limit=limit, offset=offset
+        )
+    except RecommendationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/user/preferences")
+def api_get_preferences(voter_id: str | None = Cookie(default=None)) -> JSONResponse:
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+    session = _session()
+    try:
+        result = get_preferences(session, voter_id)
+    except RecommendationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+    response = JSONResponse(result)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.post("/api/user/preferences")
+def api_set_preferences(
+    payload: dict = Body(...),
+    voter_id: str | None = Cookie(default=None),
+) -> JSONResponse:
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+    session = _session()
+    try:
+        result = set_preferences(
+            session,
+            voter_id,
+            algorithm=payload.get("algorithm"),
+            min_score_threshold=payload.get("min_score_threshold"),
+            topic_weight=payload.get("topic_weight"),
+            source_weight=payload.get("source_weight"),
+            recency_weight=payload.get("recency_weight"),
+        )
+    except RecommendationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+    response = JSONResponse(result)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
 
 
 @app.get("/submit", response_class=HTMLResponse)

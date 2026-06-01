@@ -378,3 +378,17 @@ class UserTopicFollow(Base):
     user_id: Mapped[str] = mapped_column(index=True)
     topic_id: Mapped[int] = mapped_column(ForeignKey("topics.id"), index=True)
     followed_at: Mapped[datetime]
+
+
+class UserPreferences(Base):
+    __tablename__ = "user_preferences"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(unique=True, index=True)
+    recommendation_algorithm: Mapped[str] = mapped_column(default="balanced")
+    min_score_threshold: Mapped[float] = mapped_column(default=0.0)
+    topic_weight: Mapped[float] = mapped_column(default=0.5)
+    source_weight: Mapped[float] = mapped_column(default=0.3)
+    recency_weight: Mapped[float] = mapped_column(default=0.2)
+    created_at: Mapped[datetime]
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
