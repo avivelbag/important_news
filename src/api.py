@@ -4,6 +4,7 @@ Run with ``uvicorn src.api:app``. The static site (``docs/``) calls
 ``/api/search`` for its live search box.
 """
 
+import datetime as dt
 import os
 import uuid
 from pathlib import Path
@@ -28,6 +29,11 @@ from src.comments import (
     get_thread,
     post_comment,
     vote_comment,
+)
+from src.credibility_scorer import (
+    credibility_report,
+    list_source_credibility,
+    set_manual_override,
 )
 from src.db import get_engine, get_session, init_db
 from src.moderation import (
@@ -1185,6 +1191,63 @@ def moderation_page(request: Request) -> HTMLResponse:
 @app.get("/moderation/flags", response_class=HTMLResponse)
 def flag_moderation_page(request: Request) -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(request, "flag_queue.html", {})
+
+
+@app.get("/api/sources/{source_id}/credibility")
+def api_source_credibility(source_id: int) -> dict:
+    session = _session()
+    try:
+        report = credibility_report(session, source_id)
+        if report is None:
+            raise HTTPException(status_code=404, detail="source not found")
+        return report
+    finally:
+        session.close()
+
+
+@app.get("/api/admin/sources")
+def api_admin_sources(
+    limit: int = Query(200, ge=1, le=1000),
+    _: None = Depends(_require_admin),
+) -> list[dict]:
+    session = _session()
+    try:
+        return list_source_credibility(session, limit)
+    finally:
+        session.close()
+
+
+@app.post("/api/admin/sources/{source_id}/credibility")
+def api_override_credibility(
+    source_id: int,
+    payload: dict = Body(...),
+    _: None = Depends(_require_admin),
+) -> dict:
+    # ``score`` omitted or null clears the override and reverts to the computed
+    # value; any other value is clamped to [0, 100] by the scorer.
+    raw_score = payload.get("score")
+    score = None
+    if raw_score is not None:
+        try:
+            score = float(raw_score)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="score must be a number") from exc
+    session = _session()
+    try:
+        if credibility_report(session, source_id) is None:
+            raise HTTPException(status_code=404, detail="source not found")
+        set_manual_override(
+            session,
+            source_id,
+            score,
+            moderator=payload.get("moderator") or "admin",
+            reason=payload.get("reason") or "",
+            now=dt.datetime.now(dt.timezone.utc),
+        )
+        session.commit()
+        return credibility_report(session, source_id)
+    finally:
+        session.close()
 
 
 @app.get("/api/sources/health")

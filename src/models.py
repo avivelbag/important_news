@@ -42,18 +42,7 @@ class SourceHealth(Base):
 
 
 class SourceCredibility(Base):
-    """Rolled-up credibility score (0-100) for a single source, one row per source.
-
-    ``score`` is the blended credibility used by ranking/search to weight a
-    source's stories. It is normally recomputed from observed signals
-    (``vote_ratio``, domain authority, content freshness) by the credibility
-    scorer, but a moderator can pin it with ``manual_override``: when that is
-    set it wins over the computed value and ``reason`` records why. ``tier`` is
-    the human-facing bucket ("verified" / "community" / "unverified") derived
-    from the effective score, denormalised so the badge renders without
-    re-deriving it. ``updated_at`` records the last recompute/override so the
-    dashboard can show a trend.
-    """
+    """Rolled-up credibility score (0-100) for a single source, one row per source."""
 
     __tablename__ = "source_credibility"
 
@@ -67,6 +56,23 @@ class SourceCredibility(Base):
     # Free-form note explaining a manual override or a notable computed score.
     reason: Mapped[str | None] = mapped_column(Text, default=None)
     tier: Mapped[str] = mapped_column(default="unverified")
+    updated_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    source: Mapped["Source"] = relationship()
+
+
+class SourceStats(Base):
+    """Rolled-up engagement stats for a single source, feeding the credibility dashboard."""
+
+    __tablename__ = "source_stats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("sources.id"), unique=True)
+    article_count: Mapped[int] = mapped_column(default=0)
+    avg_votes: Mapped[float] = mapped_column(default=0.0)
+    avg_comments: Mapped[float] = mapped_column(default=0.0)
+    # Earliest published_at across the source's stories; None until it has any.
+    established_date: Mapped[datetime | None] = mapped_column(default=None)
     updated_at: Mapped[datetime | None] = mapped_column(default=None)
 
     source: Mapped["Source"] = relationship()
@@ -110,6 +116,10 @@ class Story(Base):
     # the bookmarks service so listings can show "N saved" without a COUNT.
     bookmark_count: Mapped[int] = mapped_column(default=0)
     computed_score: Mapped[float] = mapped_column(default=0.0)
+    # Denormalised copy of the owning source's effective credibility (0-100),
+    # refreshed by the credibility scorer so listings/search can weight and badge
+    # a story without joining source_credibility per render.
+    credibility_score: Mapped[float] = mapped_column(default=50.0)
     published_at: Mapped[datetime]
     fetched_at: Mapped[datetime]
 
