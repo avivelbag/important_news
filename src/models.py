@@ -367,6 +367,30 @@ class ArticleTopic(Base):
     created_at: Mapped[datetime]
 
 
+class SavedSearch(Base):
+    """A user's stored search-filter preset, recallable from their preferences.
+
+    Users are identified by the same free-form ``user_id`` string used on Votes
+    and Bookmarks. ``query_params`` is the raw search query string (everything
+    after ``?`` on ``/api/search``, e.g. ``q=rocket&sources=hn&min_score=10``)
+    so a saved search round-trips back to a shareable URL without a schema
+    change when new filters are added. The ``(user_id, name)`` unique constraint
+    keeps preset names distinct per user (the upsert/dedup key).
+    """
+
+    __tablename__ = "saved_searches"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name"),
+        Index("ix_saved_searches_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(index=True)
+    name: Mapped[str]
+    query_params: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime]
+
+
 class UserTopicFollow(Base):
     """A user's subscription to a topic; one row per (user, topic)."""
 
