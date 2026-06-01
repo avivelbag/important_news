@@ -327,3 +327,54 @@ class UserProfile(Base):
     submission_count: Mapped[int] = mapped_column(default=0)
     vote_count: Mapped[int] = mapped_column(default=0)
     comment_count: Mapped[int] = mapped_column(default=0)
+
+
+class Topic(Base):
+    """A topic/tag in the AI/aerospace taxonomy, optionally nested under a parent.
+
+    ``slug`` is the URL-safe identifier used in API paths and the dedup key when
+    seeding. ``parent_id`` points at the broader domain topic (NULL for a
+    top-level domain), giving a shallow hierarchy. ``follower_count`` and
+    ``article_count`` are denormalised counts kept in sync by the topics service
+    so listings and analytics avoid a per-render COUNT.
+    """
+
+    __tablename__ = "topics"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    slug: Mapped[str] = mapped_column(unique=True, index=True)
+    name: Mapped[str]
+    description: Mapped[str] = mapped_column(Text, default="")
+    # NULL for a domain (top-level) topic; otherwise the domain it sits under.
+    parent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("topics.id"), default=None, index=True
+    )
+    follower_count: Mapped[int] = mapped_column(default=0)
+    article_count: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime]
+
+
+class ArticleTopic(Base):
+    """Join row tagging one story with one topic (many-to-many)."""
+
+    __tablename__ = "article_topics"
+    # One tag per (story, topic) so re-tagging is idempotent.
+    __table_args__ = (UniqueConstraint("story_id", "topic_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    story_id: Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    topic_id: Mapped[int] = mapped_column(ForeignKey("topics.id"), index=True)
+    created_at: Mapped[datetime]
+
+
+class UserTopicFollow(Base):
+    """A user's subscription to a topic; one row per (user, topic)."""
+
+    __tablename__ = "user_topic_follows"
+    # One follow per (user, topic) so following is idempotent.
+    __table_args__ = (UniqueConstraint("user_id", "topic_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(index=True)
+    topic_id: Mapped[int] = mapped_column(ForeignKey("topics.id"), index=True)
+    followed_at: Mapped[datetime]

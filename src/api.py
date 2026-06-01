@@ -47,6 +47,20 @@ from src.submissions import (
     list_pending,
     reject_submission,
 )
+from src.topics import (
+    TopicError,
+    auto_tag_story,
+    follow_topic,
+    followed_feed,
+    get_topic,
+    list_followed,
+    list_topics,
+    suggest_topics,
+    tag_story,
+    topic_analytics,
+    topic_stories,
+    unfollow_topic,
+)
 from src.voting import VoteError, cast_vote, get_distribution
 
 app = FastAPI(title="Important News Search")
@@ -614,6 +628,189 @@ def api_reject_submission(
         return {"submission_id": submission.id, "status": submission.status}
     except SubmissionError as exc:
         raise HTTPException(status_code=_submission_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+def _topic_status(exc: TopicError) -> int:
+    """Map a TopicError to 404 for unknown topic/story, else 400."""
+    return 404 if exc.not_found else 400
+
+
+@app.get("/api/topics")
+def api_list_topics(parent: str | None = Query(None)) -> dict:
+    """List topics, optionally only the children of the ``parent`` slug.
+
+    Responds 404 when ``parent`` is given but unknown. Returns ``{topics}``.
+    """
+    session = _session()
+    try:
+        return {"topics": list_topics(session, parent=parent)}
+    except TopicError as exc:
+        raise HTTPException(status_code=_topic_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+# Declared before /api/topics/{slug} so these literal paths win the match.
+@app.get("/api/topics/analytics")
+def api_topic_analytics(limit: int = Query(10, ge=1, le=100)) -> dict:
+    """Return the most-followed and trending topics."""
+    session = _session()
+    try:
+        return topic_analytics(session, limit)
+    finally:
+        session.close()
+
+
+@app.get("/api/topics/suggest")
+def api_suggest_topics(
+    title: str = Query(..., min_length=1),
+    summary: str = Query(""),
+) -> dict:
+    """Return keyword-suggested topic slugs for a candidate title/summary."""
+    return {"slugs": suggest_topics(title, summary)}
+
+
+@app.get("/api/topics/{slug}")
+def api_get_topic(slug: str) -> dict:
+    """Return one topic with its description and related topic slugs; 404 if unknown."""
+    session = _session()
+    try:
+        return get_topic(session, slug)
+    except TopicError as exc:
+        raise HTTPException(status_code=_topic_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/topics/{slug}/stories")
+def api_topic_stories(
+    slug: str,
+    sort: str = Query("recency", description="recency | score"),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict:
+    """Return stories tagged with ``slug`` sorted by recency/score; 404 if unknown."""
+    session = _session()
+    try:
+        return topic_stories(session, slug, sort=sort, limit=limit)
+    except TopicError as exc:
+        raise HTTPException(status_code=_topic_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/articles/{article_id}/topics")
+def api_tag_article(article_id: int, payload: dict = Body(...)) -> dict:
+    """Tag ``article_id`` with the ``slugs`` list in the body (idempotent).
+
+    Responds 400 when ``slugs`` is not a list and 404 for an unknown story or
+    slug. Returns ``{story_id, topics}`` with the story's full current slug list.
+    """
+    slugs = payload.get("slugs")
+    if not isinstance(slugs, list):
+        raise HTTPException(status_code=400, detail="slugs (list) required")
+    session = _session()
+    try:
+        return tag_story(session, article_id, [str(s) for s in slugs])
+    except TopicError as exc:
+        raise HTTPException(status_code=_topic_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/articles/{article_id}/topics/auto")
+def api_auto_tag_article(article_id: int) -> dict:
+    """Auto-tag ``article_id`` from its title via keyword matching; 404 if unknown."""
+    session = _session()
+    try:
+        return auto_tag_story(session, article_id)
+    except TopicError as exc:
+        raise HTTPException(status_code=_topic_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/user/topics")
+def api_list_followed_topics(voter_id: str | None = Cookie(default=None)) -> dict:
+    """Return the topics the caller (``voter_id`` cookie) follows.
+
+    Without the cookie the caller follows nothing, so an empty list is returned
+    rather than an error.
+    """
+    if voter_id is None:
+        return {"topics": []}
+    session = _session()
+    try:
+        return {"topics": list_followed(session, voter_id)}
+    except TopicError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/user/topics/feed")
+def api_followed_feed(
+    voter_id: str | None = Cookie(default=None),
+    sort: str = Query("recency", description="recency | score"),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict:
+    """Return the caller's topic-filtered feed (stories from followed topics).
+
+    Without the ``voter_id`` cookie the caller follows nothing, so an empty feed
+    is returned rather than an error.
+    """
+    if voter_id is None:
+        return {"user_id": None, "sort": sort, "total": 0, "stories": []}
+    session = _session()
+    try:
+        return followed_feed(session, voter_id, sort=sort, limit=limit)
+    except TopicError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/user/topics/{slug}/follow")
+def api_follow_topic(
+    slug: str, voter_id: str | None = Cookie(default=None)
+) -> JSONResponse:
+    """Follow ``slug`` for the caller, minting a ``voter_id`` cookie if absent.
+
+    Responds 404 for an unknown topic. Returns ``{slug, following, follower_count}``.
+    """
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+    session = _session()
+    try:
+        result = follow_topic(session, voter_id, slug)
+    except TopicError as exc:
+        raise HTTPException(status_code=_topic_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+    response = JSONResponse(result)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.delete("/api/user/topics/{slug}/follow")
+def api_unfollow_topic(
+    slug: str, voter_id: str | None = Cookie(default=None)
+) -> dict:
+    """Unfollow ``slug`` for the caller (idempotent).
+
+    Responds 400 when no ``voter_id`` cookie is present (nothing to unfollow for
+    an unidentified caller) and 404 for an unknown topic.
+    """
+    if voter_id is None:
+        raise HTTPException(status_code=400, detail="voter_id cookie required")
+    session = _session()
+    try:
+        return unfollow_topic(session, voter_id, slug)
+    except TopicError as exc:
+        raise HTTPException(status_code=_topic_status(exc), detail=str(exc)) from exc
     finally:
         session.close()
 
