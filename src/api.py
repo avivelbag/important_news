@@ -29,7 +29,15 @@ from src.comments import (
     post_comment,
     vote_comment,
 )
+from src.auth import (
+    AuthError,
+    authenticate_header,
+    create_token,
+    list_tokens,
+    revoke_token,
+)
 from src.db import get_engine, get_session, init_db
+from src.middleware import RateLimitMiddleware
 from src.moderation import (
     ModerationError,
     delete_content,
@@ -103,6 +111,12 @@ def _session():
         _engine = get_engine()
         init_db(_engine)
     return get_session(_engine)
+
+
+# Enforce per-IP / per-user rate limits on every /api/* request before it
+# reaches a route handler. The factory is evaluated per request, so it picks up
+# the engine that tests monkeypatch onto this module.
+app.add_middleware(RateLimitMiddleware, session_factory=_session)
 
 
 @app.get("/api/search")
@@ -210,6 +224,105 @@ def api_delete_saved_search(
         return {"deleted": saved_id}
     except SavedSearchError as exc:
         status = 404 if exc.not_found else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/user/tokens")
+def api_create_token(
+    payload: dict = Body(...),
+    voter_id: str | None = Cookie(default=None),
+) -> JSONResponse:
+    """Create an API token for the caller and return it (raw secret shown once).
+
+    Identifies the user by the ``voter_id`` cookie, minting one on first use.
+    Expects ``name`` and optional ``expires_in_seconds`` in the JSON body. The
+    raw token value is present only in this 201 response and is never
+    retrievable again; subsequent listings omit it. Responds 400 for invalid
+    input.
+    """
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+
+    session = _session()
+    try:
+        created = create_token(
+            session,
+            voter_id,
+            payload.get("name"),
+            expires_in_seconds=payload.get("expires_in_seconds"),
+        )
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+    response = JSONResponse(created, status_code=201)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.get("/api/user/tokens")
+def api_list_tokens(
+    voter_id: str | None = Cookie(default=None),
+) -> list[dict]:
+    """Return the caller's API tokens (newest first, secrets omitted)."""
+    if voter_id is None:
+        return []
+    session = _session()
+    try:
+        return list_tokens(session, voter_id)
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.delete("/api/user/tokens/{token_id}")
+def api_revoke_token(
+    token_id: int,
+    voter_id: str | None = Cookie(default=None),
+) -> dict:
+    """Revoke one of the caller's API tokens; 404 if it is not theirs."""
+    if voter_id is None:
+        raise HTTPException(status_code=404, detail="token not found")
+    session = _session()
+    try:
+        revoke_token(session, voter_id, token_id)
+        return {"revoked": token_id}
+    except AuthError as exc:
+        status = 404 if exc.not_found else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/auth/validate")
+def api_validate_token(
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Validate the Bearer token in the ``Authorization`` header.
+
+    Returns ``{valid: True, ...}`` with the owning user and token metadata when
+    the token is active and unexpired; responds 401 when the header is missing,
+    malformed, invalid, revoked, or expired.
+    """
+    session = _session()
+    try:
+        token = authenticate_header(session, authorization)
+        return {
+            "valid": True,
+            "user_id": token.user_id,
+            "token_id": token.id,
+            "name": token.name,
+        }
+    except AuthError as exc:
+        status = 401 if exc.unauthorized else 400
         raise HTTPException(status_code=status, detail=str(exc)) from exc
     finally:
         session.close()

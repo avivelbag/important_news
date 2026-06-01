@@ -491,6 +491,52 @@ class ModerationAction(Base):
     created_at: Mapped[datetime]
 
 
+class APIToken(Base):
+    """A user's API credential for stateless Bearer authentication.
+
+    The raw token is shown to the user exactly once at creation; only its
+    SHA-256 hash (``token_hash``) is persisted, so a database leak never exposes
+    a usable credential. ``prefix`` is the non-secret leading characters of the
+    raw token, stored purely so the UI can let a user recognise which token is
+    which without revealing the secret. ``expires_at`` is None for a
+    non-expiring token; ``is_active`` is cleared on revocation. ``last_used_at``
+    is stamped each time the token authenticates a request, for usage display.
+    """
+
+    __tablename__ = "api_tokens"
+    __table_args__ = (Index("ix_api_tokens_user", "user_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(index=True)
+    name: Mapped[str]
+    token_hash: Mapped[str] = mapped_column(unique=True, index=True)
+    prefix: Mapped[str]
+    created_at: Mapped[datetime]
+    last_used_at: Mapped[datetime | None] = mapped_column(default=None)
+    expires_at: Mapped[datetime | None] = mapped_column(default=None)
+    is_active: Mapped[bool] = mapped_column(default=True)
+
+
+class RateLimitStats(Base):
+    """A rolling fixed-window request counter for one rate-limit identifier.
+
+    ``identifier`` is a single caller key — ``user:<id>`` for an authenticated
+    request or ``ip:<addr>`` for an anonymous one — and is unique so each caller
+    owns exactly one counter row. ``request_count`` is the number of requests
+    seen in the current window; ``reset_at`` is when that window ends. Once the
+    wall clock passes ``reset_at`` the window rolls over: the count is zeroed and
+    a fresh ``reset_at`` is set. This persists per-user/per-IP usage so a usage
+    dashboard can report the caller's current quota consumption.
+    """
+
+    __tablename__ = "rate_limit_stats"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    identifier: Mapped[str] = mapped_column(unique=True, index=True)
+    request_count: Mapped[int] = mapped_column(default=0)
+    reset_at: Mapped[datetime]
+
+
 class ModerationNotification(Base):
     """A message to a content owner that their content was actioned.
 
