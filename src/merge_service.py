@@ -1,31 +1,10 @@
-"""Admin-initiated near-duplicate article merging, with undo and an audit log.
-
-URL-based and automatic fuzzy-title dedup already happens in
-:mod:`src.deduplicator`. This module is the *manual* layer on top: an admin
-reviews near-duplicate candidates and explicitly folds one story (the *source*)
-into another (the canonical *target*). Unlike the automatic pass, every manual
-merge is recorded as an :class:`~src.models.ArticleMerge` audit row and is fully
-reversible within :data:`ROLLBACK_WINDOW_HOURS`.
-
-Merging consolidates engagement so a single canonical story carries the whole
-conversation: the source's denormalised ``vote_count`` is added onto the target
-(matching the deduplicator's count-accumulation approach), every comment on the
-source is reassigned to the target so the discussion threads merge, and the
-source is linked to the target via ``canonical_id`` with ``merge_status``
-``"merged"`` so the site can render a "merged into [canonical]" pointer.
-
-Rollback reverses exactly what a specific merge did — restoring the transferred
-vote count and moving back only the comments that merge redirected — so undoing
-one merge never disturbs another.
-"""
-
 import datetime as dt
 import json
 
 from sqlalchemy import select
 
 from src.deduplicator import normalize_url, title_similarity
-from src.models import ArticleMerge, Comment, Story
+from src.models import ArticleMerge, Comment, DuplicateCandidate, Story
 
 # A near-duplicate candidate must clear this title similarity to be surfaced for
 # merging; mirrors the deduplicator's automatic threshold.
@@ -41,13 +20,9 @@ ROLLBACK_WINDOW_HOURS = 24
 
 
 class MergeError(ValueError):
-    """Raised for invalid merge/rollback operations.
-
-    ``not_found`` distinguishes a missing story/merge (HTTP 404) from a
-    bad-input or rule violation (HTTP 400) so the API layer can pick a status
-    without inspecting the message text.
-    """
-
+    # ``not_found`` distinguishes a missing story/merge (HTTP 404) from a
+    # bad-input or rule violation (HTTP 400) so the API can pick a status code
+    # without inspecting the message text.
     def __init__(self, message: str, *, not_found: bool = False) -> None:
         super().__init__(message)
         self.not_found = not_found
@@ -55,6 +30,15 @@ class MergeError(ValueError):
 
 def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
+
+
+def _as_naive_utc(value: dt.datetime) -> dt.datetime:
+    # SQLite drops tzinfo, so a merged_at read back from the DB is naive while a
+    # freshly produced _now() is tz-aware; normalise both before subtracting so
+    # the rollback-window check never crashes on a naive/aware mismatch.
+    if value.tzinfo is not None:
+        return value.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return value
 
 
 def _get_story(session, story_id: int) -> Story:
@@ -65,7 +49,6 @@ def _get_story(session, story_id: int) -> Story:
 
 
 def _recount_comments(session, story: Story) -> None:
-    """Refresh *story*'s denormalised count of its non-deleted comments."""
     story.comment_count = len(
         [c for c in session.scalars(
             select(Comment).where(Comment.story_id == story.id)
@@ -73,17 +56,29 @@ def _recount_comments(session, story: Story) -> None:
     )
 
 
-def _merged_source_names(*stories: Story) -> list[str]:
-    """Return the distinct contributing source names across *stories*, in order.
+def _rebuild_merged_sources(session, target: Story) -> list[str]:
+    # Rebuild the canonical's contributing-source list purely from its own
+    # source name plus the source story of every *currently active* merge that
+    # targets it. We never read ``target.merged_sources`` here: it is derived
+    # state that may still list a source whose merge was just rolled back, so
+    # deriving from the live merge rows is the only way a partial rollback drops
+    # exactly the undone source and keeps the rest.
+    merges = session.scalars(
+        select(ArticleMerge).where(
+            ArticleMerge.target_article_id == target.id,
+            ArticleMerge.active.is_(True),
+        )
+    ).all()
 
-    Re-derives the union from each story's own ``merged_sources`` (if it already
-    accumulated some) plus its ``source_name``, so merging a story that was
-    itself a prior canonical preserves every original source.
-    """
     names: list[str] = []
-    for story in stories:
-        existing = json.loads(story.merged_sources) if story.merged_sources else []
-        for name in [*existing, story.source_name]:
+    if target.source_name and target.source_name not in names:
+        names.append(target.source_name)
+    for merge in merges:
+        source = session.get(Story, merge.source_article_id)
+        if source is None:
+            continue
+        existing = json.loads(source.merged_sources) if source.merged_sources else []
+        for name in [*existing, source.source_name]:
             if name and name not in names:
                 names.append(name)
     return names
@@ -97,31 +92,26 @@ def potential_duplicates(
     threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     now: dt.datetime | None = None,
 ) -> list[dict]:
-    """Return stories that look like duplicates of *story_id*, best match first.
-
-    Scans stories published within *lookback_days* of the target (and not
-    already merged away) and keeps those whose normalised URL matches or whose
-    title clears *threshold*. The target itself, stories already merged into
-    something, and the target's existing duplicates are excluded. Each candidate
-    is returned as a merge-preview dict (``id, title, url, source, similarity,
-    vote_count, comment_count, published_at``) so the admin UI can show a
-    side-by-side comparison before merging. Raises :class:`MergeError` if the
-    target story does not exist.
-    """
     if now is None:
         now = _now()
     target = _get_story(session, story_id)
     target_url = normalize_url(target.url)
 
+    # Push the time window into SQL so we only load stories published within
+    # ``lookback_days`` of the target, never the whole table. Title similarity
+    # itself (SequenceMatcher) cannot be expressed in SQL, so the surviving rows
+    # are still scored in Python.
+    window = dt.timedelta(days=lookback_days)
+    query = select(Story).where(
+        Story.id != target.id,
+        Story.canonical_id.is_(None),
+        Story.merge_status != "merged",
+        Story.published_at >= target.published_at - window,
+        Story.published_at <= target.published_at + window,
+    )
+
     candidates = []
-    for other in session.scalars(select(Story)).all():
-        if other.id == target.id:
-            continue
-        if other.merge_status == "merged" or other.canonical_id is not None:
-            continue
-        delta = abs((other.published_at - target.published_at).total_seconds())
-        if delta > lookback_days * 86400:
-            continue
+    for other in session.scalars(query).all():
         similarity = title_similarity(target.title, other.title)
         url_match = bool(target_url) and normalize_url(other.url) == target_url
         if not url_match and similarity < threshold:
@@ -145,6 +135,90 @@ def potential_duplicates(
     return candidates
 
 
+def flag_duplicates_on_ingest(
+    session,
+    story_id: int,
+    *,
+    lookback_days: int = DEFAULT_LOOKBACK_DAYS,
+    threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    now: dt.datetime | None = None,
+) -> list[dict]:
+    # Automatic detection step run when a new story enters the system (see
+    # src/submissions.py::approve_submission). It reuses the same similarity
+    # check the admin lookup uses, but persists each near-duplicate pair into the
+    # detection queue (``DuplicateCandidate``) so an admin can review and merge
+    # later. Already-queued, unresolved pairs are skipped so re-ingesting the
+    # same story does not pile up rows. Never raises for a missing story — ingest
+    # must not fail just because detection cannot run — returning ``[]`` instead.
+    if now is None:
+        now = _now()
+    if session.get(Story, story_id) is None:
+        return []
+
+    candidates = potential_duplicates(
+        session, story_id, lookback_days=lookback_days, threshold=threshold, now=now
+    )
+
+    flagged = []
+    for candidate in candidates:
+        already = session.scalars(
+            select(DuplicateCandidate).where(
+                DuplicateCandidate.story_id == story_id,
+                DuplicateCandidate.candidate_id == candidate["id"],
+                DuplicateCandidate.resolved.is_(False),
+            )
+        ).first()
+        if already is not None:
+            continue
+        flag = DuplicateCandidate(
+            story_id=story_id,
+            candidate_id=candidate["id"],
+            similarity=candidate["similarity"],
+            detected_at=now,
+            resolved=False,
+        )
+        session.add(flag)
+        flagged.append(candidate)
+
+    if flagged:
+        session.commit()
+    return flagged
+
+
+def list_duplicate_flags(
+    session, *, unresolved_only: bool = True, limit: int = 100
+) -> list[dict]:
+    limit = max(1, min(limit, 500))
+    query = select(DuplicateCandidate)
+    if unresolved_only:
+        query = query.where(DuplicateCandidate.resolved.is_(False))
+    rows = session.scalars(
+        query.order_by(
+            DuplicateCandidate.detected_at.desc(), DuplicateCandidate.id.desc()
+        ).limit(limit)
+    ).all()
+
+    result = []
+    for flag in rows:
+        story = session.get(Story, flag.story_id)
+        candidate = session.get(Story, flag.candidate_id)
+        result.append(
+            {
+                "flag_id": flag.id,
+                "story_id": flag.story_id,
+                "story_title": story.title if story else None,
+                "candidate_id": flag.candidate_id,
+                "candidate_title": candidate.title if candidate else None,
+                "similarity": flag.similarity,
+                "resolved": flag.resolved,
+                "detected_at": flag.detected_at.isoformat()
+                if flag.detected_at
+                else None,
+            }
+        )
+    return result
+
+
 def merge_articles(
     session,
     source_id: int,
@@ -153,21 +227,6 @@ def merge_articles(
     *,
     now: dt.datetime | None = None,
 ) -> dict:
-    """Fold *source_id* into the canonical *target_id* and log the merge.
-
-    Transfers the source's denormalised ``vote_count`` onto the target (zeroing
-    the source), reassigns every comment on the source to the target so the
-    discussion threads consolidate, links the source to the target via
-    ``canonical_id`` (``merge_status="merged"``), marks the target
-    ``"canonical"``, and unions their contributing source names onto the target's
-    ``merged_sources``. An :class:`~src.models.ArticleMerge` audit row captures
-    who merged, when, how many votes moved, and exactly which comments were
-    redirected (so rollback is precise).
-
-    Raises :class:`MergeError` when either story is missing (404), when source
-    and target are the same story, or when the source has already been merged.
-    Returns a summary dict including the new ``merge_id``.
-    """
     if now is None:
         now = _now()
     if source_id == target_id:
@@ -197,11 +256,16 @@ def merge_articles(
     source.canonical_id = target.id
     source.merge_status = "merged"
     target.merge_status = "canonical"
-    target.merged_sources = json.dumps(_merged_source_names(target, source))
 
-    session.flush()
-    _recount_comments(session, source)
-    _recount_comments(session, target)
+    # Any open detection-queue entries pairing these two are now settled.
+    for flag in session.scalars(
+        select(DuplicateCandidate).where(
+            DuplicateCandidate.story_id.in_([source.id, target.id]),
+            DuplicateCandidate.candidate_id.in_([source.id, target.id]),
+            DuplicateCandidate.resolved.is_(False),
+        )
+    ).all():
+        flag.resolved = True
 
     merge = ArticleMerge(
         source_article_id=source.id,
@@ -213,6 +277,11 @@ def merge_articles(
         active=True,
     )
     session.add(merge)
+    session.flush()
+
+    target.merged_sources = json.dumps(_rebuild_merged_sources(session, target))
+    _recount_comments(session, source)
+    _recount_comments(session, target)
     session.commit()
 
     return {
@@ -234,18 +303,6 @@ def rollback_merge(
     window_hours: int = ROLLBACK_WINDOW_HOURS,
     now: dt.datetime | None = None,
 ) -> dict:
-    """Undo merge *merge_id*, restoring the source story, within the time window.
-
-    Reverses precisely what :func:`merge_articles` did: subtracts the recorded
-    transferred votes from the target and restores them on the source, moves the
-    exact set of redirected comments back to the source, clears the source's
-    ``canonical_id``/``merge_status``, and recomputes ``merged_sources`` on the
-    target. The audit row is marked inactive and stamped with the undoing actor.
-
-    Raises :class:`MergeError` when the merge is unknown (404), already rolled
-    back, or older than *window_hours* (the merge is considered settled). Returns
-    a summary dict.
-    """
     if now is None:
         now = _now()
     merge = session.get(ArticleMerge, merge_id)
@@ -254,7 +311,9 @@ def rollback_merge(
     if not merge.active:
         raise MergeError(f"merge {merge_id} has already been rolled back")
 
-    age_hours = (now - merge.merged_at).total_seconds() / 3600
+    age_hours = (
+        _as_naive_utc(now) - _as_naive_utc(merge.merged_at)
+    ).total_seconds() / 3600
     if age_hours > window_hours:
         raise MergeError(
             f"merge {merge_id} is {age_hours:.0f}h old; rollback window is "
@@ -281,26 +340,27 @@ def rollback_merge(
 
     source.canonical_id = None
     source.merge_status = "none"
-    target.merged_sources = json.dumps(_merged_source_names(target))
-    if not target.merged_sources or target.merged_sources == "[]":
-        target.merged_sources = None
-    # The target is only still "canonical" if other merges remain pointing at it.
+
+    merge.active = False
+    merge.rolled_back_at = now
+    merge.rolled_back_by = rolled_back_by
+    session.flush()
+
+    # Recompute the canonical's state from the merges that *remain* active. If
+    # this was the last one the target is no longer canonical; otherwise its
+    # merged-source list is rebuilt without the just-undone source.
     remaining = session.scalars(
         select(ArticleMerge).where(
             ArticleMerge.target_article_id == target.id,
             ArticleMerge.active.is_(True),
-            ArticleMerge.id != merge.id,
         )
     ).first()
     if remaining is None:
         target.merge_status = "none"
         target.merged_sources = None
+    else:
+        target.merged_sources = json.dumps(_rebuild_merged_sources(session, target))
 
-    merge.active = False
-    merge.rolled_back_at = now
-    merge.rolled_back_by = rolled_back_by
-
-    session.flush()
     _recount_comments(session, source)
     _recount_comments(session, target)
     session.commit()
@@ -316,13 +376,6 @@ def rollback_merge(
 
 
 def merged_into(session, story_id: int) -> dict | None:
-    """Return the canonical story *story_id* was merged into, or ``None``.
-
-    Powers the "this story was merged into [canonical]" banner: returns
-    ``{id, title, url}`` of the canonical when *story_id* is a merged duplicate,
-    and ``None`` when the story is canonical or untouched. Raises
-    :class:`MergeError` if *story_id* does not exist.
-    """
     story = _get_story(session, story_id)
     if story.canonical_id is None:
         return None
@@ -335,17 +388,7 @@ def merged_into(session, story_id: int) -> dict | None:
 def list_merges(
     session, *, active_only: bool = False, limit: int = 100
 ) -> list[dict]:
-    """Return the merge audit log, most recent first.
-
-    Each entry reports the source/target ids and titles, who merged, the
-    transferred vote count, and the merge's current state (``active`` plus any
-    rollback stamp). Set *active_only* to hide already-undone merges. *limit*
-    (1..500) bounds the result. Raises :class:`MergeError` on a non-positive
-    limit.
-    """
-    if limit < 1:
-        raise MergeError("limit must be >= 1")
-    limit = min(limit, 500)
+    limit = max(1, min(limit, 500))
     query = select(ArticleMerge)
     if active_only:
         query = query.where(ArticleMerge.active.is_(True))

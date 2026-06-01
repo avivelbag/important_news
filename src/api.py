@@ -43,6 +43,7 @@ from src.moderation import (
 )
 from src.merge_service import (
     MergeError,
+    list_duplicate_flags,
     list_merges,
     merge_articles,
     merged_into,
@@ -653,9 +654,16 @@ def _submission_status(exc: SubmissionError) -> int:
 ADMIN_TOKEN = os.environ.get("SUBMISSIONS_ADMIN_TOKEN", "swarm-admin")
 
 
-def _require_admin(x_admin_token: str | None = Header(default=None)) -> None:
+def _require_admin(
+    x_admin_token: str | None = Header(default=None),
+    x_admin_user: str | None = Header(default=None),
+) -> str:
     if x_admin_token != ADMIN_TOKEN:
         raise HTTPException(status_code=403, detail="admin token required")
+    # The acting admin's identity, recorded on audited actions (merges, etc.).
+    # All admins share one token, so the client names itself via X-Admin-User;
+    # absent that we fall back to the generic "admin".
+    return (x_admin_user or "").strip() or "admin"
 
 
 @app.post("/api/submissions")
@@ -1174,21 +1182,14 @@ def api_set_preferences(
 
 
 def _merge_status_code(exc: MergeError) -> int:
-    """Map a MergeError to 404 for unknown story/merge, else 400."""
     return 404 if exc.not_found else 400
 
 
 @app.get("/api/admin/articles/{article_id}/potential-duplicates")
 def api_potential_duplicates(
     article_id: int,
-    _: None = Depends(_require_admin),
+    _: str = Depends(_require_admin),
 ) -> dict:
-    """Return near-duplicate candidates for *article_id* with merge previews.
-
-    Each candidate carries the comparison fields (title, source, similarity,
-    vote/comment counts, publish time) the admin UI shows side-by-side before a
-    merge. Responds 404 when the article does not exist.
-    """
     session = _session()
     try:
         candidates = potential_duplicates(session, article_id)
@@ -1201,21 +1202,30 @@ def api_potential_duplicates(
         session.close()
 
 
+@app.get("/api/admin/duplicate-flags")
+def api_duplicate_flags(
+    unresolved_only: bool = Query(True),
+    limit: int = Query(100, ge=1, le=500),
+    _: str = Depends(_require_admin),
+) -> dict:
+    session = _session()
+    try:
+        return {"flags": list_duplicate_flags(
+            session, unresolved_only=unresolved_only, limit=limit
+        )}
+    finally:
+        session.close()
+
+
 @app.post("/api/admin/articles/{source_id}/merge-into/{target_id}")
 def api_merge_articles(
     source_id: int,
     target_id: int,
-    _: None = Depends(_require_admin),
+    admin: str = Depends(_require_admin),
 ) -> dict:
-    """Merge *source_id* into the canonical *target_id*; admin only.
-
-    Consolidates votes, redirects the source's comments to the target, and logs
-    the merge for audit/rollback. Responds 404 for an unknown story and 400 when
-    the merge is invalid (same story, or source already merged).
-    """
     session = _session()
     try:
-        return merge_articles(session, source_id, target_id, merged_by="admin")
+        return merge_articles(session, source_id, target_id, merged_by=admin)
     except MergeError as exc:
         raise HTTPException(
             status_code=_merge_status_code(exc), detail=str(exc)
@@ -1227,16 +1237,11 @@ def api_merge_articles(
 @app.post("/api/admin/merges/{merge_id}/rollback")
 def api_rollback_merge(
     merge_id: int,
-    _: None = Depends(_require_admin),
+    admin: str = Depends(_require_admin),
 ) -> dict:
-    """Undo merge *merge_id* within the rollback window; admin only.
-
-    Responds 404 when the merge is unknown and 400 when it was already rolled
-    back or is past the rollback window.
-    """
     session = _session()
     try:
-        return rollback_merge(session, merge_id, rolled_back_by="admin")
+        return rollback_merge(session, merge_id, rolled_back_by=admin)
     except MergeError as exc:
         raise HTTPException(
             status_code=_merge_status_code(exc), detail=str(exc)
@@ -1249,9 +1254,8 @@ def api_rollback_merge(
 def api_list_merges(
     active_only: bool = Query(False),
     limit: int = Query(100, ge=1, le=500),
-    _: None = Depends(_require_admin),
+    _: str = Depends(_require_admin),
 ) -> list[dict]:
-    """Return the merge audit log (newest first); admin only."""
     session = _session()
     try:
         return list_merges(session, active_only=active_only, limit=limit)
@@ -1265,12 +1269,6 @@ def api_list_merges(
 
 @app.get("/api/articles/{article_id}/merged-into")
 def api_merged_into(article_id: int) -> dict:
-    """Return the canonical story *article_id* was merged into, if any.
-
-    Powers the public "this story was merged into [canonical]" banner. Returns
-    ``{article_id, merged_into}`` where ``merged_into`` is null for a canonical
-    or untouched story. Responds 404 when the article does not exist.
-    """
     session = _session()
     try:
         return {"article_id": article_id, "merged_into": merged_into(session, article_id)}
@@ -1284,7 +1282,6 @@ def api_merged_into(article_id: int) -> dict:
 
 @app.get("/admin/merges", response_class=HTMLResponse)
 def admin_merge_page(request: Request) -> HTMLResponse:
-    """Render the admin merge-management dashboard (recent merge history)."""
     session = _session()
     try:
         merges = list_merges(session, limit=100)

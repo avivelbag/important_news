@@ -308,9 +308,145 @@ def test_list_merges_active_only_filters_rolled_back():
     session.close()
 
 
-def test_list_merges_rejects_bad_limit():
+def test_list_merges_clamps_bad_limit():
     engine = _engine()
     session = db.get_session(engine)
-    with pytest.raises(merge_service.MergeError):
-        merge_service.list_merges(session, limit=0)
+    # A non-positive limit is a caller bug, not a domain error: it is clamped
+    # to a sane value rather than raising a confusing MergeError.
+    assert merge_service.list_merges(session, limit=0) == []
+    assert merge_service.list_merges(session, limit=-5) == []
+    session.close()
+
+
+# --- partial rollback rebuilds merged_sources ----------------------------
+
+
+def test_partial_rollback_keeps_other_merged_sources():
+    engine = _engine()
+    session = db.get_session(engine)
+    target = _add_story(session, title="Canonical", url="https://a.com/1", source="HN")
+    s1 = _add_story(session, title="Canonical copy 1", url="https://b.com/2", source="Reddit")
+    s2 = _add_story(session, title="Canonical copy 2", url="https://c.com/3", source="Lobsters")
+    session.commit()
+
+    r1 = merge_service.merge_articles(session, s1.id, target.id, now=NOW)
+    merge_service.merge_articles(session, s2.id, target.id, now=NOW)
+
+    import json
+    t = session.get(models.Story, target.id)
+    assert set(json.loads(t.merged_sources)) == {"HN", "Reddit", "Lobsters"}
+
+    # Roll back only the first merge: Reddit must drop out, the rest remain.
+    merge_service.rollback_merge(session, r1["merge_id"], now=NOW + dt.timedelta(hours=1))
+    session.expire_all()
+    t = session.get(models.Story, target.id)
+    assert t.merge_status == "canonical"
+    assert set(json.loads(t.merged_sources)) == {"HN", "Lobsters"}
+    assert "Reddit" not in t.merged_sources
+    session.close()
+
+
+# --- automatic detection on ingest ---------------------------------------
+
+
+def test_flag_duplicates_on_ingest_queues_near_duplicate():
+    engine = _engine()
+    session = db.get_session(engine)
+    existing = _add_story(
+        session, title="SpaceX launches new Starship rocket to orbit",
+        url="https://hn.com/x",
+    )
+    new = _add_story(
+        session, title="SpaceX launches a new Starship rocket to orbit",
+        url="https://reddit.com/y", source="Reddit",
+    )
+    session.commit()
+
+    flagged = merge_service.flag_duplicates_on_ingest(session, new.id, now=NOW)
+    assert [c["id"] for c in flagged] == [existing.id]
+
+    queue = merge_service.list_duplicate_flags(session)
+    assert len(queue) == 1
+    assert queue[0]["story_id"] == new.id
+    assert queue[0]["candidate_id"] == existing.id
+    assert queue[0]["resolved"] is False
+    session.close()
+
+
+def test_flag_duplicates_on_ingest_no_match_queues_nothing():
+    engine = _engine()
+    session = db.get_session(engine)
+    _add_story(session, title="OpenAI ships a new language model", url="https://o.com/a")
+    new = _add_story(session, title="Boeing unveils a new airliner", url="https://b.com/b")
+    session.commit()
+
+    flagged = merge_service.flag_duplicates_on_ingest(session, new.id, now=NOW)
+    assert flagged == []
+    assert merge_service.list_duplicate_flags(session) == []
+    session.close()
+
+
+def test_flag_duplicates_on_ingest_is_idempotent():
+    engine = _engine()
+    session = db.get_session(engine)
+    _add_story(session, title="Identical breaking headline today", url="https://a.com/1")
+    new = _add_story(
+        session, title="Identical breaking headline today", url="https://b.com/2", source="B",
+    )
+    session.commit()
+
+    merge_service.flag_duplicates_on_ingest(session, new.id, now=NOW)
+    merge_service.flag_duplicates_on_ingest(session, new.id, now=NOW)
+    assert len(merge_service.list_duplicate_flags(session)) == 1
+    session.close()
+
+
+def test_flag_duplicates_on_ingest_missing_story_is_noop():
+    engine = _engine()
+    session = db.get_session(engine)
+    assert merge_service.flag_duplicates_on_ingest(session, 999, now=NOW) == []
+    session.close()
+
+
+def test_approve_submission_flags_duplicate():
+    import src.submissions as submissions
+
+    engine = _engine()
+    session = db.get_session(engine)
+    # approve_submission stamps the new story with the real current time, so the
+    # existing story must sit inside the lookback window relative to that.
+    recent = dt.datetime.now(dt.timezone.utc)
+    existing = _add_story(
+        session, title="NASA delays Artemis launch again", url="https://nasa.com/a",
+        published=recent,
+    )
+    sub = models.Submission(
+        user_id="u1",
+        title="NASA delays the Artemis launch again",
+        url="https://space.com/b",
+        category="aerospace",
+        status="pending",
+        created_at=NOW,
+    )
+    session.add(sub)
+    session.commit()
+
+    submissions.approve_submission(session, sub.id)
+    queue = merge_service.list_duplicate_flags(session)
+    assert len(queue) == 1
+    assert queue[0]["candidate_id"] == existing.id
+    session.close()
+
+
+def test_merge_resolves_open_duplicate_flag():
+    engine = _engine()
+    session = db.get_session(engine)
+    existing = _add_story(session, title="Shared headline now", url="https://a.com/1")
+    new = _add_story(session, title="Shared headline now", url="https://b.com/2", source="B")
+    session.commit()
+    merge_service.flag_duplicates_on_ingest(session, new.id, now=NOW)
+
+    merge_service.merge_articles(session, new.id, existing.id, now=NOW)
+    assert merge_service.list_duplicate_flags(session, unresolved_only=True) == []
+    assert len(merge_service.list_duplicate_flags(session, unresolved_only=False)) == 1
     session.close()

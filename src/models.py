@@ -528,6 +528,26 @@ class ArticleMerge(Base):
     rolled_back_by: Mapped[str | None] = mapped_column(default=None)
 
 
+class DuplicateCandidate(Base):
+    """A near-duplicate pair flagged automatically when a new story is ingested.
+
+    ``story_id`` is the freshly ingested story; ``candidate_id`` is an existing
+    story it looks like a duplicate of. These rows form the detection queue an
+    admin reviews before deciding to merge; ``resolved`` flips to True once the
+    pair is merged or dismissed so the queue only shows open items.
+    """
+
+    __tablename__ = "duplicate_candidates"
+    __table_args__ = (Index("ix_dupe_candidates_story", "story_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    story_id: Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey("stories.id"), index=True)
+    similarity: Mapped[float] = mapped_column(default=0.0)
+    detected_at: Mapped[datetime]
+    resolved: Mapped[bool] = mapped_column(default=False)
+
+
 class ModerationNotification(Base):
     """A message to a content owner that their content was actioned.
 
