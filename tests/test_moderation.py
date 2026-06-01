@@ -1,6 +1,7 @@
 """Tests for the content moderation/flagging service and its API endpoints."""
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -466,3 +467,35 @@ def test_static_moderation_js_served(client):
     resp = client.get("/static/moderation.js")
     assert resp.status_code == 200
     assert "submitFlag" in resp.text
+
+
+_MODERATION_JS = Path(__file__).resolve().parent.parent / "ui" / "static" / "moderation.js"
+
+
+def test_renderrow_escapes_user_title():
+    """The flag queue must HTML-escape the attacker-controlled story title before
+    it lands in innerHTML, or a malicious title executes JS in the admin's
+    session (stored XSS). Guard the fix at the source so a future refactor that
+    drops escaping fails here."""
+    js = _MODERATION_JS.read_text()
+    body = js[js.index("function renderRow") : js.index("function loadQueue")]
+    assert "escapeHtml(item.title" in body
+    assert "+ (item.title || \"\") +" not in body
+
+
+def test_escapehtml_helper_present_and_complete():
+    """escapeHtml must neutralise every character that can break out of an HTML
+    text node or attribute: &, <, >, ", and '."""
+    js = _MODERATION_JS.read_text()
+    assert "function escapeHtml" in js
+    for entity in ("&amp;", "&lt;", "&gt;", "&quot;", "&#39;"):
+        assert entity in js
+
+
+def test_renderreasons_escapes_keys_and_values():
+    """Reason labels are also funnelled through escapeHtml so a future
+    free-text reason cannot inject markup into the dashboard."""
+    js = _MODERATION_JS.read_text()
+    body = js[js.index("function renderReasons") : js.index("function modAction")]
+    assert "escapeHtml(k)" in body
+    assert "escapeHtml(reasonCounts[k])" in body
