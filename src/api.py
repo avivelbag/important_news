@@ -10,6 +10,7 @@ from pathlib import Path
 
 from fastapi import Body, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from src.bookmarks import (
@@ -29,6 +30,17 @@ from src.comments import (
     vote_comment,
 )
 from src.db import get_engine, get_session, init_db
+from src.moderation import (
+    ModerationError,
+    delete_content,
+    dismiss_flags,
+    flag_content,
+    flagger_stats,
+    hide_content,
+    list_actions,
+    list_flagged,
+    list_notifications,
+)
 from src.profiles import (
     ProfileError,
     get_profile,
@@ -77,9 +89,9 @@ from src.voting import VoteError, cast_vote, get_distribution
 
 app = FastAPI(title="Important News Search")
 
-_TEMPLATES = Jinja2Templates(
-    directory=str(Path(__file__).resolve().parent.parent / "ui" / "templates")
-)
+_UI_DIR = Path(__file__).resolve().parent.parent / "ui"
+_TEMPLATES = Jinja2Templates(directory=str(_UI_DIR / "templates"))
+app.mount("/static", StaticFiles(directory=str(_UI_DIR / "static")), name="static")
 
 _engine = None
 
@@ -734,6 +746,163 @@ def api_reject_submission(
         session.close()
 
 
+def _moderation_status(exc: ModerationError) -> int:
+    return 404 if exc.not_found else 400
+
+
+def _flag(content_type: str, content_id: int, payload: dict, voter_id: str | None):
+    reason = payload.get("reason")
+    if reason is None:
+        raise HTTPException(status_code=400, detail="reason required")
+
+    new_cookie = voter_id is None
+    if new_cookie:
+        voter_id = str(uuid.uuid4())
+
+    session = _session()
+    try:
+        result = flag_content(session, content_type, content_id, voter_id, reason)
+    except ModerationError as exc:
+        raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+    return result, new_cookie, voter_id
+
+
+@app.post("/api/stories/{story_id}/flag")
+def api_flag_story(
+    story_id: int,
+    payload: dict = Body(...),
+    voter_id: str | None = Cookie(default=None),
+) -> JSONResponse:
+    result, new_cookie, voter_id = _flag("story", story_id, payload, voter_id)
+    response = JSONResponse(result, status_code=201)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.post("/api/comments/{comment_id}/flag")
+def api_flag_comment(
+    comment_id: int,
+    payload: dict = Body(...),
+    voter_id: str | None = Cookie(default=None),
+) -> JSONResponse:
+    result, new_cookie, voter_id = _flag("comment", comment_id, payload, voter_id)
+    response = JSONResponse(result, status_code=201)
+    if new_cookie:
+        response.set_cookie("voter_id", voter_id, httponly=True, samesite="lax")
+    return response
+
+
+@app.get("/api/flags")
+def api_list_flags(
+    content_type: str | None = Query(None),
+    reason: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    _: None = Depends(_require_admin),
+) -> list[dict]:
+    session = _session()
+    try:
+        return list_flagged(session, content_type, reason, limit)
+    except ModerationError as exc:
+        raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/flags/flaggers")
+def api_flagger_stats(
+    limit: int = Query(50, ge=1, le=500),
+    _: None = Depends(_require_admin),
+) -> list[dict]:
+    session = _session()
+    try:
+        return flagger_stats(session, limit)
+    except ModerationError as exc:
+        raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/flags/{content_type}/{content_id}/hide")
+def api_hide_content(
+    content_type: str,
+    content_id: int,
+    _: None = Depends(_require_admin),
+) -> dict:
+    session = _session()
+    try:
+        return hide_content(session, content_type, content_id, "admin")
+    except ModerationError as exc:
+        raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/flags/{content_type}/{content_id}/delete-content")
+def api_delete_content(
+    content_type: str,
+    content_id: int,
+    _: None = Depends(_require_admin),
+) -> dict:
+    session = _session()
+    try:
+        return delete_content(session, content_type, content_id, "admin")
+    except ModerationError as exc:
+        raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.post("/api/flags/{content_type}/{content_id}/dismiss")
+def api_dismiss_flags(
+    content_type: str,
+    content_id: int,
+    _: None = Depends(_require_admin),
+) -> dict:
+    session = _session()
+    try:
+        return dismiss_flags(session, content_type, content_id, "admin")
+    except ModerationError as exc:
+        raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/flags/{content_type}/{content_id}/actions")
+def api_list_actions(
+    content_type: str,
+    content_id: int,
+    limit: int = Query(100, ge=1, le=500),
+    _: None = Depends(_require_admin),
+) -> list[dict]:
+    session = _session()
+    try:
+        return list_actions(session, content_type, content_id, limit)
+    except ModerationError as exc:
+        raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
+@app.get("/api/user/notifications")
+def api_list_notifications(
+    unread_only: bool = Query(False),
+    limit: int = Query(50, ge=1, le=200),
+    voter_id: str | None = Cookie(default=None),
+) -> list[dict]:
+    if not voter_id:
+        return []
+    session = _session()
+    try:
+        return list_notifications(session, voter_id, unread_only, limit)
+    except ModerationError as exc:
+        raise HTTPException(status_code=_moderation_status(exc), detail=str(exc)) from exc
+    finally:
+        session.close()
+
+
 def _topic_status(exc: TopicError) -> int:
     """Map a TopicError to 404 for unknown topic/story, else 400."""
     return 404 if exc.not_found else 400
@@ -1011,6 +1180,11 @@ def moderation_page(request: Request) -> HTMLResponse:
     return _TEMPLATES.TemplateResponse(
         request, "moderation.html", {"submissions": pending}
     )
+
+
+@app.get("/moderation/flags", response_class=HTMLResponse)
+def flag_moderation_page(request: Request) -> HTMLResponse:
+    return _TEMPLATES.TemplateResponse(request, "flag_queue.html", {})
 
 
 @app.get("/api/sources/health")

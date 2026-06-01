@@ -31,9 +31,11 @@ _FILTERS = [("all", "All"), ("ai", "AI"), ("aerospace", "Aerospace")]
 def fetch_stories(session) -> list[Story]:
     # Only canonical stories are rendered; duplicates (canonical_id set) are
     # folded into their canonical row so each story appears at most once.
+    # Moderation-hidden stories (auto-hidden on flags or hidden by a moderator)
+    # are withheld from the public site pending review.
     stmt = (
         select(Story)
-        .where(Story.canonical_id.is_(None))
+        .where(Story.canonical_id.is_(None), Story.is_hidden.is_(False))
         .order_by(
             Story.computed_score.desc(),
             Story.published_at.desc(),

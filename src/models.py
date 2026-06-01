@@ -110,6 +110,14 @@ class Story(Base):
     # used on Vote and Comment). NULL for scraped stories with no submitter.
     submitted_by: Mapped[str | None] = mapped_column(default=None, index=True)
 
+    # Moderation: denormalised count of open flags, an is_hidden toggle the
+    # moderation service sets (auto-hide on threshold or a manual hide), and a
+    # JSON map of reason -> count so the dashboard can show a breakdown without
+    # re-aggregating the flags table per render.
+    flag_count: Mapped[int] = mapped_column(default=0)
+    is_hidden: Mapped[bool] = mapped_column(default=False)
+    flag_reason_counts: Mapped[str | None] = mapped_column(Text, default=None)
+
     source_id: Mapped[int | None] = mapped_column(ForeignKey("sources.id"), default=None)
     source: Mapped["Source | None"] = relationship(back_populates="stories")
     votes: Mapped[list["Vote"]] = relationship(back_populates="story")
@@ -170,6 +178,13 @@ class Comment(Base):
     deleted: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime | None] = mapped_column(default=None)
+
+    # Moderation denormalisation, mirroring Story: open-flag count, an is_hidden
+    # toggle (auto-hide on threshold or a manual moderator hide), and a JSON map
+    # of reason -> count for the dashboard breakdown.
+    flag_count: Mapped[int] = mapped_column(default=0)
+    is_hidden: Mapped[bool] = mapped_column(default=False)
+    flag_reason_counts: Mapped[str | None] = mapped_column(Text, default=None)
 
     story: Mapped["Story"] = relationship(back_populates="comments")
     parent: Mapped["Comment | None"] = relationship(
@@ -413,3 +428,86 @@ class UserPreferences(Base):
     recency_weight: Mapped[float] = mapped_column(default=0.2)
     created_at: Mapped[datetime]
     updated_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class Flag(Base):
+    """A user report against a piece of content (a story or a comment).
+
+    Content is referenced polymorphically by ``(content_type, content_id)``
+    rather than a foreign key, so one table covers both stories and comments.
+    The ``(user_id, content_type, content_id)`` unique constraint enforces the
+    "one flag per user per item" rule, making a repeat flag a no-op. ``reason``
+    is one of the preset moderation reasons (see ``moderation.FLAG_REASONS``).
+
+    ``status`` follows the flag's life through the moderation queue: ``open``
+    while awaiting review, ``upheld`` once the content was hidden/deleted, and
+    ``dismissed`` once a moderator cleared it (a signal the report was false).
+    Only ``open`` flags count toward a content item's denormalised
+    ``flag_count``; resolved rows are kept for the audit trail and for tracking
+    repeat flaggers / false reporters.
+    """
+
+    __tablename__ = "flags"
+    __table_args__ = (
+        UniqueConstraint("user_id", "content_type", "content_id"),
+        Index("ix_flags_content", "content_type", "content_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(index=True)
+    # "story" | "comment"
+    content_type: Mapped[str]
+    content_id: Mapped[int]
+    # One of the preset reasons, e.g. "spam" | "off_topic" | "abuse".
+    reason: Mapped[str]
+    # "open" | "upheld" | "dismissed"
+    status: Mapped[str] = mapped_column(default="open")
+    created_at: Mapped[datetime]
+    # Set when a moderator resolves the flag (upheld/dismissed); None while open.
+    resolved_at: Mapped[datetime | None] = mapped_column(default=None)
+
+
+class ModerationAction(Base):
+    """Append-only audit-trail entry for one moderator decision.
+
+    Every hide/delete/dismiss (and the system's own auto-hide) writes a row here
+    so the history of who did what to which content is permanently reconstructable.
+    ``moderator`` is None for system-initiated actions such as the auto-hide that
+    fires when an item crosses the flag threshold.
+    """
+
+    __tablename__ = "moderation_actions"
+    __table_args__ = (Index("ix_mod_actions_content", "content_type", "content_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    content_type: Mapped[str]
+    content_id: Mapped[int]
+    # "auto_hide" | "hide" | "delete" | "dismiss"
+    action: Mapped[str]
+    # The acting moderator id; None for system-initiated actions (auto_hide).
+    moderator: Mapped[str | None] = mapped_column(default=None)
+    # Free-form human-readable context (e.g. flag count at action time).
+    detail: Mapped[str | None] = mapped_column(Text, default=None)
+    created_at: Mapped[datetime]
+
+
+class ModerationNotification(Base):
+    """A message to a content owner that their content was actioned.
+
+    Created whenever a moderator hides/deletes a flagged item the user owns, so
+    the owner can be told their content was actioned. ``read`` lets a future
+    inbox UI mark messages seen; it starts False.
+    """
+
+    __tablename__ = "moderation_notifications"
+    __table_args__ = (Index("ix_mod_notifications_user", "user_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[str] = mapped_column(index=True)
+    content_type: Mapped[str]
+    content_id: Mapped[int]
+    # The action that triggered the notice: "hide" | "delete".
+    action: Mapped[str]
+    message: Mapped[str] = mapped_column(Text)
+    read: Mapped[bool] = mapped_column(default=False)
+    created_at: Mapped[datetime]

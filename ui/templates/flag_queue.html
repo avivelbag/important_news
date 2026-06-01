@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flag Moderation Queue</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; color: #1a1a1a; }
+    h1 { margin-bottom: 0.5rem; }
+    .filters { margin-bottom: 1rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+    select, button { padding: 0.3rem 0.6rem; border-radius: 5px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #eee; font-size: 0.9rem; vertical-align: top; }
+    th { background: #fafafa; }
+    .reason { display: inline-block; padding: 0.1rem 0.4rem; margin: 0 0.2rem 0.2rem 0; border-radius: 4px; background: #eef; font-size: 0.8rem; }
+    .count { font-weight: 700; }
+    .hidden-tag { color: #d62728; font-weight: 600; font-size: 0.8rem; }
+    button { border: 0; cursor: pointer; font-weight: 600; color: #fff; margin-right: 0.3rem; }
+    .hide { background: #ff7f0e; }
+    .del { background: #d62728; }
+    .dismiss { background: #2ca02c; }
+    .audit { background: #6650a4; }
+    .empty { color: #666; }
+    pre.actions { background: #f6f6f6; padding: 0.5rem; font-size: 0.8rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Flag Moderation Queue</h1>
+  <p class="empty" id="status">Enter the admin token to load flagged content.</p>
+  <div class="filters">
+    <label>Type
+      <select id="filter-type">
+        <option value="">all</option>
+        <option value="story">story</option>
+        <option value="comment">comment</option>
+      </select>
+    </label>
+    <label>Reason
+      <select id="filter-reason">
+        <option value="">all</option>
+        <option value="spam">spam</option>
+        <option value="off_topic">off_topic</option>
+        <option value="abuse">abuse</option>
+        <option value="misinformation">misinformation</option>
+        <option value="duplicate">duplicate</option>
+        <option value="other">other</option>
+      </select>
+    </label>
+    <button class="dismiss" id="reload">Reload</button>
+  </div>
+  <table>
+    <thead>
+      <tr><th>Type</th><th>ID</th><th>Title</th><th class="count">Flags</th><th>Reasons</th><th>Actions</th></tr>
+    </thead>
+    <tbody id="queue"></tbody>
+  </table>
+  <script src="/static/moderation.js"></script>
+</body>
+</html>
