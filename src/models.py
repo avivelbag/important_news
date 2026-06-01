@@ -381,18 +381,6 @@ class UserTopicFollow(Base):
 
 
 class UserPreferences(Base):
-    """A user's personalized-feed settings, one row per ``user_id``.
-
-    ``user_id`` matches the free-form id used on Votes/Comments/Follows (a cookie
-    uuid or chosen name). ``recommendation_algorithm`` picks how the feed is
-    ranked (``balanced`` | ``trending`` | ``recent`` | ``followed``).
-    ``min_score_threshold`` drops stories whose ``computed_score`` falls below it.
-    The three weight columns let a user tune the ``balanced`` blend of topic
-    match, source preference, and recency; they must sum to a positive value and
-    are only consulted for the ``balanced`` algorithm (the other algorithms use
-    fixed presets).
-    """
-
     __tablename__ = "user_preferences"
 
     id: Mapped[int] = mapped_column(primary_key=True)

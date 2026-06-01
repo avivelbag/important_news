@@ -830,13 +830,7 @@ def api_user_feed(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ) -> dict:
-    """Return the caller's personalized feed (``voter_id`` cookie identifies them).
-
-    Anonymous callers (no cookie) get an empty personalized payload with
-    ``user_id: None`` so the homepage can fall back to the global feed. Responds
-    400 for an unknown ``algorithm``. The body carries ``{user_id, algorithm,
-    limit, offset, total, stories}``.
-    """
+    # Anonymous callers get user_id None so the homepage falls back to global.
     if voter_id is None:
         return {
             "user_id": None,
@@ -859,12 +853,6 @@ def api_user_feed(
 
 @app.get("/api/user/preferences")
 def api_get_preferences(voter_id: str | None = Cookie(default=None)) -> JSONResponse:
-    """Return the caller's recommendation preferences (minting a cookie if absent).
-
-    Reading preferences for a brand-new caller creates and returns the default
-    ``balanced`` settings, and the minted ``voter_id`` cookie is set on the
-    response so subsequent updates address the same row.
-    """
     new_cookie = voter_id is None
     if new_cookie:
         voter_id = str(uuid.uuid4())
@@ -886,13 +874,6 @@ def api_set_preferences(
     payload: dict = Body(...),
     voter_id: str | None = Cookie(default=None),
 ) -> JSONResponse:
-    """Update the caller's recommendation algorithm/weights/threshold.
-
-    Accepts any subset of ``algorithm``, ``min_score_threshold``,
-    ``topic_weight``, ``source_weight``, ``recency_weight`` in the JSON body;
-    omitted keys are left unchanged. Mints a ``voter_id`` cookie when absent.
-    Responds 400 for an unknown algorithm or invalid weights.
-    """
     new_cookie = voter_id is None
     if new_cookie:
         voter_id = str(uuid.uuid4())

@@ -1,29 +1,4 @@
-"""Personalized recommendation feed for identified users.
-
-An authenticated user (identified by the same free-form ``user_id`` string used
-on Votes/Comments/Follows) gets a homepage feed ranked to their interests rather
-than the static global feed. The interest profile is built deterministically
-from three on-site signals:
-
-* **followed topics** — :class:`~src.models.UserTopicFollow` rows, plus the
-  topics tagged onto stories the user has upvoted (so voting teaches the feed);
-* **preferred sources** — the source names of the stories the user upvoted,
-  weighted by how often they upvoted from each;
-* **recency** — newer stories rank above older ones.
-
-Each candidate story is scored as a weighted blend of those three components,
-each normalised into ``[0, 1]`` across the candidate set so the blend is
-scale-free and reproducible. Four algorithms pick the blend:
-
-* ``balanced``  — uses the user's tunable topic/source/recency weights;
-* ``trending``  — folds in the story's net vote count, favouring popular items;
-* ``recent``    — recency dominates;
-* ``followed``  — restricts the feed to stories tagged with a followed topic.
-
-No machine learning, wall-clock, or network access is involved: given the same
-database the same feed comes back every time, which is what the tests rely on.
-Already-upvoted stories are excluded so the feed always surfaces *new* content.
-"""
+"""Deterministic personalized feed ranked from a user's follows and votes."""
 
 import datetime as dt
 
@@ -49,7 +24,7 @@ _ALGORITHM_WEIGHTS = {
 
 
 class RecommendationError(ValueError):
-    """Raised for invalid recommendation input (bad algorithm/weights/user)."""
+    pass
 
 
 def _now() -> dt.datetime:
@@ -64,13 +39,6 @@ def _clean(user_id: str) -> str:
 
 
 def get_preferences(session, user_id: str) -> dict:
-    """Return *user_id*'s feed preferences, creating defaults on first read.
-
-    The defaults are the ``balanced`` algorithm with the canonical
-    0.5/0.3/0.2 topic/source/recency split and no score floor. The row is
-    persisted so a later :func:`set_preferences` updates it in place. Raises
-    :class:`RecommendationError` for an empty user id.
-    """
     name = _clean(user_id)
     prefs = session.scalars(
         select(UserPreferences).where(UserPreferences.user_id == name)
@@ -92,14 +60,6 @@ def set_preferences(
     source_weight: float | None = None,
     recency_weight: float | None = None,
 ) -> dict:
-    """Update *user_id*'s feed preferences, creating the row if absent.
-
-    Only the keyword arguments that are not ``None`` are changed, so a caller can
-    flip just the algorithm without disturbing the weights. *algorithm* must be
-    one of :data:`VALID_ALGORITHMS`; weights must be non-negative and the three
-    weights must not all be zero (a zero blend cannot rank anything). Raises
-    :class:`RecommendationError` on any violation. Returns the updated dict.
-    """
     name = _clean(user_id)
     prefs = session.scalars(
         select(UserPreferences).where(UserPreferences.user_id == name)
@@ -152,15 +112,6 @@ def _prefs_dict(prefs: UserPreferences) -> dict:
 
 
 def build_profile(session, user_id: str) -> dict:
-    """Build *user_id*'s interest profile from follows and voting history.
-
-    Returns ``{topic_ids, source_counts, upvoted_story_ids}`` where ``topic_ids``
-    is the union of explicitly-followed topics and the topics tagged onto the
-    user's upvoted stories, ``source_counts`` maps a source name to how many of
-    the user's upvotes came from it, and ``upvoted_story_ids`` is the set of
-    stories the user has upvoted (excluded from the feed as already-seen). Raises
-    :class:`RecommendationError` for an empty user id. Pure read — no writes.
-    """
     name = _clean(user_id)
 
     followed_topic_ids = set(
@@ -200,12 +151,7 @@ def build_profile(session, user_id: str) -> dict:
 
 
 def _normalize(values: list[float]) -> list[float]:
-    """Scale *values* into ``[0, 1]``; all-equal inputs map to ``0.0``.
-
-    Returning ``0.0`` for a flat distribution means a signal that does not vary
-    across the candidate set contributes nothing to ranking, rather than biasing
-    every story by a constant.
-    """
+    # All-equal inputs map to 0.0 so a non-varying signal does not bias ranking.
     if not values:
         return []
     lo, hi = min(values), max(values)
@@ -235,22 +181,6 @@ def personalized_feed(
     limit: int = 20,
     offset: int = 0,
 ) -> dict:
-    """Return *user_id*'s personalized, paginated feed.
-
-    The active algorithm is *algorithm* when given (validated against
-    :data:`VALID_ALGORITHMS`) else the user's stored preference. Candidates are
-    the canonical stories (``canonical_id IS NULL``) whose ``computed_score``
-    meets the user's ``min_score_threshold``, minus the stories the user already
-    upvoted; for the ``followed`` algorithm they are further restricted to
-    stories tagged with a topic the user follows or has upvoted into their
-    profile. Each candidate is scored as the weighted, individually-normalised
-    blend of topic match, source preference, recency, and (for ``trending``) net
-    votes, then ordered by score with an ``id`` tie-break for a stable page.
-
-    *limit* is clamped to ``[1, 100]`` and *offset* to ``>= 0``. Raises
-    :class:`RecommendationError` for an empty user or unknown algorithm. Returns
-    ``{user_id, algorithm, limit, offset, total, stories}``.
-    """
     name = _clean(user_id)
     if algorithm is not None and algorithm not in VALID_ALGORITHMS:
         raise RecommendationError(f"algorithm must be one of {VALID_ALGORITHMS}")
@@ -341,7 +271,6 @@ def personalized_feed(
 
 
 def _story_topic_map(session, story_ids: list[int]) -> dict[int, set[int]]:
-    """Return ``{story_id: {topic_id, ...}}`` for *story_ids* in one query."""
     rows = session.execute(
         select(ArticleTopic.story_id, ArticleTopic.topic_id).where(
             ArticleTopic.story_id.in_(story_ids)

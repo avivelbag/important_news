@@ -275,7 +275,28 @@ def render_html(
         f'    <nav class="filters">\n{nav}\n    </nav>\n'
         "  </header>\n"
         '  <main>\n'
-        f"{body}\n"
+        '    <section id="personalized-feed" class="personalized" hidden>\n'
+        '      <div class="feed-controls">\n'
+        '        <span class="feed-label">Your feed</span>\n'
+        '        <div class="algo-switch">\n'
+        '          <button type="button" class="algo" data-algo="balanced">'
+        "Balanced</button>\n"
+        '          <button type="button" class="algo" data-algo="trending">'
+        "Trending</button>\n"
+        '          <button type="button" class="algo" data-algo="recent">'
+        "Recent</button>\n"
+        '          <button type="button" class="algo" data-algo="followed">'
+        "Followed</button>\n"
+        "        </div>\n"
+        '        <button type="button" id="toggle-feed" class="toggle-feed">'
+        "View all stories</button>\n"
+        "      </div>\n"
+        '      <ol id="personalized-list" class="stories"></ol>\n'
+        '      <p id="personalized-empty" class="empty" hidden>'
+        "No personalized stories yet — vote and follow topics to train your "
+        "feed.</p>\n"
+        "    </section>\n"
+        f'    <div id="global-feed">\n{body}\n    </div>\n'
         "  </main>\n"
         '  <footer>Generated static site &middot; AI &amp; Aerospace</footer>\n'
         '  <script src="filter.js"></script>\n'
@@ -283,6 +304,7 @@ def render_html(
         '  <script src="vote.js"></script>\n'
         '  <script src="comments.js"></script>\n'
         '  <script src="bookmark.js"></script>\n'
+        '  <script src="feed.js"></script>\n'
         "</body>\n"
         "</html>\n"
     )
@@ -428,6 +450,16 @@ def render_css() -> str:
         ".discussion-count { color: var(--muted); }\n"
         ".empty { color: var(--muted); font-style: italic; }\n"
         ".muted { color: var(--muted); }\n"
+        ".personalized { margin-bottom: 1.2rem; }\n"
+        ".feed-controls { display: flex; align-items: center; gap: 0.5rem; "
+        "flex-wrap: wrap; margin-bottom: 0.6rem; }\n"
+        ".feed-label { font-weight: bold; }\n"
+        ".algo-switch { display: flex; gap: 0.3rem; }\n"
+        "button.algo, button.toggle-feed { border: 1px solid var(--accent); "
+        "background: #fff; color: var(--accent); border-radius: 4px; "
+        "padding: 0.2rem 0.6rem; cursor: pointer; font-size: 0.8rem; }\n"
+        "button.algo.active { background: var(--accent); color: #fff; }\n"
+        "button.toggle-feed { margin-left: auto; }\n"
         "nav.site-nav { margin-top: 0.35rem; display: flex; gap: 0.8rem; }\n"
         "nav.site-nav a { color: #fff; font-size: 0.8rem; text-decoration: none; }\n"
         "nav.site-nav a:hover { text-decoration: underline; }\n"
@@ -688,6 +720,114 @@ def render_vote_js() -> str:
         "    for (var j = 0; j < buttons.length; j++) {\n"
         '      buttons[j].addEventListener("click", function () { click(this); });\n'
         "    }\n"
+        "  }\n"
+        "\n"
+        '  if (document.readyState === "loading") {\n'
+        '    document.addEventListener("DOMContentLoaded", init);\n'
+        "  } else {\n"
+        "    init();\n"
+        "  }\n"
+        "})();\n"
+    )
+
+
+def render_feed_js() -> str:
+    # On load, asks /api/user/feed whether the caller is a known voter. If so it
+    # hides the global feed, shows the personalized list, and wires the algorithm
+    # switch (persisted via POST /api/user/preferences) and the "View all
+    # stories" toggle. Anonymous callers (user_id null) keep the global feed.
+    return (
+        "(function () {\n"
+        '  var section = document.getElementById("personalized-feed");\n'
+        '  var global = document.getElementById("global-feed");\n'
+        '  var list = document.getElementById("personalized-list");\n'
+        '  var empty = document.getElementById("personalized-empty");\n'
+        '  var toggle = document.getElementById("toggle-feed");\n'
+        "  if (!section || !global || !list || !toggle) return;\n"
+        '  var showingGlobal = false;\n'
+        '  var algorithm = "balanced";\n'
+        "\n"
+        "  function escapeText(value) {\n"
+        '    var div = document.createElement("div");\n'
+        '    div.textContent = value == null ? "" : String(value);\n'
+        "    return div.innerHTML;\n"
+        "  }\n"
+        "\n"
+        "  function render(stories) {\n"
+        '    list.innerHTML = "";\n'
+        "    if (!stories || !stories.length) {\n"
+        "      empty.hidden = false;\n"
+        "      return;\n"
+        "    }\n"
+        "    empty.hidden = true;\n"
+        "    for (var i = 0; i < stories.length; i++) {\n"
+        "      var s = stories[i];\n"
+        '      var li = document.createElement("li");\n'
+        '      li.className = "story";\n'
+        '      li.setAttribute("data-story-id", s.id);\n'
+        "      li.innerHTML =\n"
+        '        \'<a class="title" href="\' + escapeText(s.url) + \'">\' +\n'
+        "        escapeText(s.title) +\n"
+        "        '</a> <span class=\"meta\">' +\n"
+        '        escapeText(s.source_name || "") + \' &middot; \' +\n'
+        "        escapeText(s.vote_count) + ' points</span>';\n"
+        "      list.appendChild(li);\n"
+        "    }\n"
+        "  }\n"
+        "\n"
+        "  function markActive() {\n"
+        '    var buttons = section.querySelectorAll("button.algo");\n'
+        "    for (var i = 0; i < buttons.length; i++) {\n"
+        '      var on = buttons[i].getAttribute("data-algo") === algorithm;\n'
+        '      buttons[i].classList.toggle("active", on);\n'
+        "    }\n"
+        "  }\n"
+        "\n"
+        "  function load() {\n"
+        '    fetch("/api/user/feed?algorithm=" + encodeURIComponent(algorithm) +\n'
+        '      "&limit=20", { credentials: "same-origin" })\n'
+        "      .then(function (resp) { return resp.ok ? resp.json() : null; })\n"
+        "      .then(function (data) {\n"
+        "        if (!data || data.user_id == null) return;\n"
+        "        section.hidden = false;\n"
+        "        if (!showingGlobal) global.hidden = true;\n"
+        "        algorithm = data.algorithm || algorithm;\n"
+        "        markActive();\n"
+        "        render(data.stories);\n"
+        "      })\n"
+        "      .catch(function () {});\n"
+        "  }\n"
+        "\n"
+        "  function pickAlgorithm(value) {\n"
+        "    algorithm = value;\n"
+        "    markActive();\n"
+        '    fetch("/api/user/preferences", {\n'
+        '      method: "POST",\n'
+        '      headers: { "Content-Type": "application/json" },\n'
+        '      credentials: "same-origin",\n'
+        '      body: JSON.stringify({ algorithm: value })\n'
+        "    }).catch(function () {});\n"
+        "    load();\n"
+        "  }\n"
+        "\n"
+        "  function toggleView() {\n"
+        "    showingGlobal = !showingGlobal;\n"
+        "    global.hidden = !showingGlobal;\n"
+        '    list.hidden = showingGlobal;\n'
+        "    empty.hidden = showingGlobal || empty.hidden;\n"
+        "    toggle.textContent =\n"
+        '      showingGlobal ? "Back to your feed" : "View all stories";\n'
+        "  }\n"
+        "\n"
+        "  function init() {\n"
+        '    var buttons = section.querySelectorAll("button.algo");\n'
+        "    for (var i = 0; i < buttons.length; i++) {\n"
+        '      buttons[i].addEventListener("click", function () {\n'
+        '        pickAlgorithm(this.getAttribute("data-algo"));\n'
+        "      });\n"
+        "    }\n"
+        '    toggle.addEventListener("click", toggleView);\n'
+        "    load();\n"
         "  }\n"
         "\n"
         '  if (document.readyState === "loading") {\n'
@@ -1352,6 +1492,7 @@ def generate_site(
     (out_path / "search.js").write_text(render_search_js(), encoding="utf-8")
     (out_path / "vote.js").write_text(render_vote_js(), encoding="utf-8")
     (out_path / "comments.js").write_text(render_comments_js(), encoding="utf-8")
+    (out_path / "feed.js").write_text(render_feed_js(), encoding="utf-8")
     (out_path / "user.html").write_text(render_user_page(), encoding="utf-8")
     (out_path / "user.js").write_text(render_user_js(), encoding="utf-8")
     (out_path / "leaderboard.html").write_text(
